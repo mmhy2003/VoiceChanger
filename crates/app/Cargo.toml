@@ -1,0 +1,15 @@
+[package]
+name = "voicechanger"
+description = "Real-time RVC voice changer for Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "voicechanger"
+path = "src/main.rs"
+
+[lints]
+workspace = true

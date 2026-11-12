@@ -4,3 +4,4 @@ pub mod devices;
 pub mod meter;
 pub mod ring;
 pub mod shared;
+pub mod worker;

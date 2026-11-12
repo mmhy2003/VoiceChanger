@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 cpal = "0.16"
 ringbuf = "0.5"
+rubato = "0.16"

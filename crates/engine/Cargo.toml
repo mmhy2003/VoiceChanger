@@ -9,3 +9,7 @@ authors.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+thiserror = "2"
+tracing = "0.1"

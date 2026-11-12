@@ -3239,6 +3239,7 @@ dependencies = [
  "cpal",
  "ringbuf",
  "rubato",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -25,11 +25,20 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Cache base models
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ hashFiles('assets/base-models.toml') }}
+      - name: Fetch base models
+        run: cargo xtask fetch-models
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
+        env:
+          VC_REQUIRE_ASSETS: "1"
         run: cargo test --workspace
       - uses: taiki-e/install-action@v2
         with:

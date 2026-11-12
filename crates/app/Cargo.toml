@@ -16,3 +16,4 @@ workspace = true
 
 [dependencies]
 eframe = "0.32"
+vc-audio = { path = "../audio" }

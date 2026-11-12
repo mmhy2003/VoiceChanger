@@ -23,7 +23,7 @@ through GitHub Releases.
 - `main`: production. Only release PRs from `develop` and `hotfix/*` PRs
   are merged into it. Every merge to `main` publishes a release.
 - Hotfixes: branch from `main`, PR into `main`, then merge `main` back into `develop`.
-- Never push directly to `develop` or `main`.
+- Never push directly to `main`.
 
 ## Build
 - `cargo build --release`

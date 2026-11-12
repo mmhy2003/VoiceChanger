@@ -7,8 +7,9 @@ Thanks for helping with VoiceChanger.
 - `develop` is the integration branch. Create `feature/<name>` or `fix/<name>`
   from `develop` and open the pull request into `develop`.
 - `main` only receives release PRs from `develop` and `hotfix/*` PRs.
-- Never push directly to `develop` or `main`. Both are protected and CI must
-  pass before a PR can be merged.
+- Never push directly to `main`. It is protected and CI must pass before a
+  PR can be merged. Direct pushes to `develop` are allowed; CI still runs on
+  every push.
 
 ## Before you push
 

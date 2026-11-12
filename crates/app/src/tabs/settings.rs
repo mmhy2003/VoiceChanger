@@ -4,12 +4,14 @@ use eframe::egui;
 use vc_audio::{feedback_warnings, is_virtual_cable, start_blocker};
 
 use crate::app::VcApp;
+use crate::widgets;
 
 const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
     ui.heading("Audio devices");
 
+    let input_level = app.is_running().then_some(app.input_meter.shown);
     let state = &mut app.state;
     let devices = &state.devices;
     let sel = &mut state.selection;
@@ -18,13 +20,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
             ui.label("Input");
-            egui::ComboBox::from_id_salt("input")
-                .selected_text(name_or_none(&sel.input))
-                .show_ui(ui, |ui| {
-                    for name in &devices.inputs {
-                        ui.selectable_value(&mut sel.input, name.clone(), name);
-                    }
-                });
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("input")
+                    .selected_text(name_or_none(&sel.input))
+                    .show_ui(ui, |ui| {
+                        for name in &devices.inputs {
+                            ui.selectable_value(&mut sel.input, name.clone(), name);
+                        }
+                    });
+                if let Some(level) = input_level {
+                    widgets::meter(ui, "Level", level);
+                }
+            });
             ui.end_row();
 
             ui.label("Cable output");

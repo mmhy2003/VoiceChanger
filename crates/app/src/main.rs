@@ -3,6 +3,7 @@
 
 mod app;
 mod tabs;
+mod widgets;
 
 use eframe::egui;
 

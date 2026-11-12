@@ -2,7 +2,9 @@
 
 pub mod assets;
 pub mod error;
+pub mod runtime;
 #[cfg(test)]
 mod testutil;
 
 pub use error::{EngineError, Result};
+pub use runtime::{ActiveProvider, Provider};

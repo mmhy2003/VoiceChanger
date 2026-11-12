@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+description = "Developer tasks for VoiceChanger (fetching base models and runtimes)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"

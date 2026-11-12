@@ -38,3 +38,58 @@ jobs:
         run: cargo deny check
       - name: Release build
         run: cargo build --release
+
+  release-guard:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Check source branch, version and changelog
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          case "$HEAD_REF" in
+            develop|hotfix/*) ;;
+            *)
+              echo "::error::PRs into main must come from develop or hotfix/*, not '$HEAD_REF'."
+              exit 1
+              ;;
+          esac
+
+          version=$(awk '
+            /^\[workspace\.package\]/ { in_pkg = 1; next }
+            /^\[/ { in_pkg = 0 }
+            in_pkg && /^version[[:space:]]*=/ {
+              sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit
+            }' Cargo.toml)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=Cargo.toml::[workspace.package] version '$version' is not plain X.Y.Z."
+            exit 1
+          fi
+
+          latest=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -n 1 || true)
+          if [ -n "$latest" ]; then
+            highest=$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n 1)
+            if [ "$version" = "$latest" ] || [ "$highest" != "$version" ]; then
+              echo "::error file=Cargo.toml::Version $version must be higher than the latest tag v$latest."
+              exit 1
+            fi
+          else
+            echo "No vX.Y.Z tags yet; skipping the tag comparison."
+          fi
+
+          escaped=${version//./\\.}
+          if ! grep -qE "^## \[$escaped\]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::CHANGELOG.md has no '## [$version]' section."
+            exit 1
+          fi
+
+          echo "Release guard passed for $version (from $HEAD_REF)."

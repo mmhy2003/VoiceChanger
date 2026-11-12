@@ -17,6 +17,8 @@ pub struct Entry {
     pub name: String,
     pub url: String,
     pub sha256: String,
+    /// Documents the licence for reviewers; `fetch-models` does not use it.
+    #[allow(dead_code)]
     pub licence: String,
     pub dest: String,
     #[serde(default)]

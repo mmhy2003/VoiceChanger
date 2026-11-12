@@ -4,6 +4,7 @@ pub mod assets;
 pub mod dsp;
 pub mod error;
 pub mod f0;
+pub mod hubert;
 pub mod runtime;
 #[cfg(test)]
 mod testutil;

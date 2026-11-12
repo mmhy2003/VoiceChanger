@@ -1,0 +1,59 @@
+# AGENTS.md
+
+## Project
+Open-source real-time voice changer for Windows (x64 only). Rust + egui (eframe).
+Uses RVC v2 models in ONNX format via ONNX Runtime (`ort`, DirectML/CUDA/CPU)
+and outputs to a virtual audio cable. A Convert tab turns PyTorch `.pth`
+RVC v2 models into ONNX without Python. Released with an Inno Setup installer
+through GitHub Releases.
+
+## Ground rules
+- Windows only. Don't add cross-platform abstractions or non-Windows code paths.
+- Never block or allocate in audio callbacks. Use the ring buffers.
+- Keep inference on the worker thread, never on the UI or audio threads.
+- Never commit model files. Base models are fetched at build time
+  (see `assets/base-models.toml`). Weight-free templates in `assets/templates/`
+  are the only ONNX files in the repository.
+- `.pth` files are untrusted. Read them only with the restricted unpickler in
+  `crates/convert`; never add code that executes pickle contents.
+- New dependencies must pass `cargo deny check` (licence and advisories).
+
+## Branches
+- `develop`: development. Feature/fix branches start here and PRs target it.
+- `main`: production. Only release PRs from `develop` and `hotfix/*` PRs
+  are merged into it. Every merge to `main` publishes a release.
+- Hotfixes: branch from `main`, PR into `main`, then merge `main` back into `develop`.
+- Never push directly to `develop` or `main`.
+
+## Build
+- `cargo build --release`
+- `cargo test --workspace`
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- Installer: `ISCC /DAppVersion=X.Y.Z installer\setup.iss`
+
+## CI/CD
+- `.github/workflows/ci.yml`: runs on pushes and PRs to `develop` and `main`.
+- `.github/workflows/release.yml`: runs on pushes to `main`; builds, signs,
+  tags `vX.Y.Z` and publishes the GitHub Release.
+- Run fmt, clippy and tests locally before pushing; CI fails on warnings.
+
+## Versioning: X.Y.Z
+- X = major release (breaking changes, new architecture, incompatible
+  settings or model format). Resets Y and Z to 0.
+- Y = minor update (new compatible features or improvements). Resets Z to 0.
+- Z = build (every released build: fixes, tweaks, rebuilds).
+- Single source of truth: `version` in the workspace `Cargo.toml`.
+  Installer, About box and Windows file version (X.Y.Z.0) derive from it.
+- Bump the version only in the release or hotfix PR into `main`.
+- Never reuse a version. Fix a bad release with a new build number.
+
+## Releasing
+1. Open a PR from `develop` into `main`.
+2. Bump the version in `Cargo.toml`; move "Unreleased" notes in
+   `CHANGELOG.md` under the new version.
+3. Merge after CI passes. The release workflow tags and publishes.
+4. Merge `main` back into `develop`.
+
+Agents must not bump versions, merge into `main`, tag or publish releases
+unless asked to.

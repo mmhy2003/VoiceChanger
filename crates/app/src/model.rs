@@ -170,7 +170,7 @@ pub fn model_name(path: &std::path::Path) -> String {
 }
 
 /// Opens the native file picker on a "vc-file-dialog" thread; sends `None` when cancelled.
-/// rfd initialises COM, which must stay off the UI thread (see `main.rs`).
+/// rfd initialises COM, so it stays on its own thread: the UI thread is STA for OLE drag-and-drop.
 /// A spawn failure yields a closed channel.
 pub fn pick_model() -> Receiver<Option<PathBuf>> {
     let (tx, rx) = mpsc::channel();

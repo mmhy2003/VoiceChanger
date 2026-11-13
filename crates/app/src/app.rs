@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use eframe::egui;
 use vc_audio::{
-    AudioSession, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Processor, Selection, Shared,
-    StreamStatus, db_to_gain, list_devices,
+    AudioControl, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Processor, Selection, SessionInfo,
+    Shared, StreamStatus, db_to_gain,
 };
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
@@ -189,7 +189,10 @@ impl AppState {
 pub struct VcApp {
     pub(crate) tab: Tab,
     pub(crate) state: AppState,
-    pub(crate) session: Option<AudioSession>,
+    /// The audio-control thread, which makes every cpal call.
+    pub(crate) audio: AudioControl,
+    /// The running session's sample rates; `Some` while running.
+    pub(crate) session_info: Option<SessionInfo>,
     /// Created once and reused by every session.
     shared: Arc<Shared>,
     /// Why audio stopped or could not start, shown on the Voice tab.
@@ -209,15 +212,20 @@ pub struct VcApp {
     processor_error: ErrorSlot,
     /// Set by a block, context or crossfade change; the stream restarts after this frame.
     pub(crate) restart_requested: bool,
+    /// Set once the dead-audio-thread banner has been shown, so dismissing it sticks.
+    audio_dead_shown: bool,
 }
 
 impl VcApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let shared = Arc::new(Shared::new());
+        let audio = AudioControl::spawn(shared.clone());
         Self {
             tab: Tab::default(),
-            state: AppState::new(list_devices()),
-            session: None,
-            shared: Arc::new(Shared::new()),
+            state: AppState::new(audio.list().unwrap_or_default()),
+            audio,
+            session_info: None,
+            shared,
             banner: None,
             input_meter: MeterState::default(),
             output_meter: MeterState::default(),
@@ -228,6 +236,7 @@ impl VcApp {
             stats: Arc::new(StreamStats::new()),
             processor_error: ErrorSlot::default(),
             restart_requested: false,
+            audio_dead_shown: false,
         }
     }
 
@@ -266,11 +275,12 @@ impl VcApp {
 
     /// Re-enumerates the audio devices.
     pub(crate) fn refresh_devices(&mut self) {
-        self.state.refresh_with(list_devices());
+        self.state
+            .refresh_with(self.audio.list().unwrap_or_default());
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        self.session.is_some()
+        self.session_info.is_some()
     }
 
     /// Streams the loaded model with the current selection; on failure, the banner says why.
@@ -290,12 +300,8 @@ impl VcApp {
             self.stats.clone(),
         );
         let processor = EngineProcessor::new(streamer, self.processor_error.clone());
-        match AudioSession::start(
-            &self.state.selection,
-            self.shared.clone(),
-            Box::new(processor),
-        ) {
-            Ok(session) => self.session = Some(session),
+        match self.audio.start(&self.state.selection, Box::new(processor)) {
+            Ok(info) => self.session_info = Some(info),
             Err((e, back)) => {
                 self.recover(back);
                 let text = format!("Could not start audio: {e}");
@@ -309,8 +315,8 @@ impl VcApp {
 
     /// Stops audio, takes the model back and clears the meters.
     pub(crate) fn stop(&mut self) {
-        if let Some(s) = self.session.take() {
-            let back = s.stop();
+        if self.session_info.take().is_some() {
+            let back = self.audio.stop();
             self.recover(back);
         }
         self.input_meter.reset();
@@ -387,11 +393,18 @@ impl VcApp {
     }
 }
 
+/// Banner and Start hint when the audio-control thread has died.
+pub(crate) const AUDIO_DEAD: &str = "The audio thread stopped unexpectedly. Restart VoiceChanger.";
+
 /// Banner text when a stopped session did not hand the model back.
 const MODEL_LOST: &str = "The model was unloaded; choose it again with Model…";
 
 impl eframe::App for VcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.audio_dead_shown && !self.audio.is_alive() {
+            self.audio_dead_shown = true;
+            self.banner = Some(AUDIO_DEAD.to_string());
+        }
         self.poll_status();
         self.poll_model();
         self.shared
@@ -443,6 +456,11 @@ impl eframe::App for VcApp {
         } else if self.model.is_loading() || self.pick_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.stop();
+        self.audio.shutdown();
     }
 }
 

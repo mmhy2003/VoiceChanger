@@ -19,9 +19,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title(app::window_title())
             .with_inner_size([720.0, 520.0])
-            .with_min_inner_size([520.0, 400.0])
-            // winit's OLE drag-and-drop puts the UI thread in STA, which breaks cpal's WASAPI COM init.
-            .with_drag_and_drop(false),
+            .with_min_inner_size([520.0, 400.0]),
         ..Default::default()
     };
     eframe::run_native(

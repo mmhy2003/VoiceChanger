@@ -1,9 +1,9 @@
 //! Voice tab: model picker, Start/Stop, live voice controls, level meters, status and the banner.
 
 use eframe::egui;
-use vc_audio::{AudioSession, SessionInfo, start_blocker};
+use vc_audio::{SessionInfo, start_blocker};
 
-use crate::app::VcApp;
+use crate::app::{AUDIO_DEAD, VcApp};
 use crate::widgets;
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
@@ -33,18 +33,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
             app.stop();
         }
     } else {
-        let blocker = start_blocker(&app.state.devices, &app.state.selection);
-        let ready = app.model.is_ready();
+        let hint = start_hint(
+            app.audio.is_alive(),
+            start_blocker(&app.state.devices, &app.state.selection),
+            app.model.is_ready(),
+        );
         if ui
-            .add_enabled(ready && blocker.is_none(), egui::Button::new("▶ Start"))
+            .add_enabled(hint.is_none(), egui::Button::new("▶ Start"))
             .clicked()
         {
             app.start();
         }
-        if let Some(blocker) = blocker {
-            ui.label(blocker);
-        } else if !ready {
-            ui.label("Pick a model first");
+        if let Some(hint) = hint {
+            ui.label(hint);
         }
     }
 
@@ -72,7 +73,25 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
 
     widgets::meter(ui, "Input", app.input_meter.shown);
     widgets::meter(ui, "Output", app.output_meter.shown);
-    ui.label(status_line(app.session.as_ref().map(AudioSession::info)));
+    ui.label(status_line(app.session_info));
+}
+
+/// Why Start is disabled, or `None` when it can be pressed: a dead audio thread first,
+/// then the device `blocker`, then a missing model.
+pub fn start_hint(
+    audio_alive: bool,
+    blocker: Option<&'static str>,
+    model_ready: bool,
+) -> Option<&'static str> {
+    if !audio_alive {
+        Some(AUDIO_DEAD)
+    } else if blocker.is_some() {
+        blocker
+    } else if !model_ready {
+        Some("Pick a model first")
+    } else {
+        None
+    }
 }
 
 /// "Stopped", or the running session's sample rates.
@@ -97,6 +116,17 @@ pub(crate) fn khz(rate: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_hint_order() {
+        const BLOCKER: &str = "Pick a cable output";
+        assert_eq!(start_hint(false, Some(BLOCKER), false), Some(AUDIO_DEAD));
+        assert_eq!(start_hint(false, None, true), Some(AUDIO_DEAD));
+        assert_eq!(start_hint(true, Some(BLOCKER), false), Some(BLOCKER));
+        assert_eq!(start_hint(true, Some(BLOCKER), true), Some(BLOCKER));
+        assert_eq!(start_hint(true, None, false), Some("Pick a model first"));
+        assert_eq!(start_hint(true, None, true), None);
+    }
 
     #[test]
     fn status_line_stopped() {

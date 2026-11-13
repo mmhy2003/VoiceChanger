@@ -7,7 +7,9 @@ use std::str::FromStr;
 use vc_engine::stream::stream_file;
 use vc_engine::{ConvertOptions, Provider, StreamSettings, convert_file};
 
-const USAGE: &str = "usage: vc-convert <in.wav> <out.wav> --model m.onnx [--sr N] [--pitch N]                      [--gate-db N] [--provider dml|cuda|cpu] [--device N] [--out-rate N]                      [--stream [--block-ms N] [--context-ms N] [--crossfade-ms N]]";
+const USAGE: &str = "usage: vc-convert <in.wav> <out.wav> --model m.onnx [--sr N] [--pitch N] \
+                     [--gate-db N] [--provider dml|cuda|cpu] [--device N] [--out-rate N] \
+                     [--stream [--block-ms N] [--context-ms N] [--crossfade-ms N]]";
 
 /// Parsed command line.
 #[derive(Debug)]
@@ -42,12 +44,9 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
             stream = true;
             continue;
         }
-        let value = it.next().ok_or_else(|| {
-            format!(
-                "{arg} needs a value
-{USAGE}"
-            )
-        })?;
+        let value = it
+            .next()
+            .ok_or_else(|| format!("{arg} needs a value\n{USAGE}"))?;
         match arg.as_str() {
             "--model" => model = Some(PathBuf::from(value)),
             "--sr" => sr = Some(number(arg, value)?),
@@ -59,27 +58,13 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--block-ms" => settings.block_ms = number(arg, value)?,
             "--context-ms" => settings.context_ms = number(arg, value)?,
             "--crossfade-ms" => settings.crossfade_ms = number(arg, value)?,
-            _ => {
-                return Err(format!(
-                    "unknown flag {arg}
-{USAGE}"
-                ));
-            }
+            _ => return Err(format!("unknown flag {arg}\n{USAGE}")),
         }
     }
 
-    let [input, output] = <[PathBuf; 2]>::try_from(paths).map_err(|_| {
-        format!(
-            "expected an input and an output WAV path
-{USAGE}"
-        )
-    })?;
-    let model = model.ok_or_else(|| {
-        format!(
-            "--model is required
-{USAGE}"
-        )
-    })?;
+    let [input, output] = <[PathBuf; 2]>::try_from(paths)
+        .map_err(|_| format!("expected an input and an output WAV path\n{USAGE}"))?;
+    let model = model.ok_or_else(|| format!("--model is required\n{USAGE}"))?;
     let mut opts = ConvertOptions::new(model);
     opts.provider = match provider.as_str() {
         "dml" => Provider::DirectMl { device },
@@ -195,6 +180,13 @@ mod tests {
         .unwrap()
         .opts;
         assert_eq!(opts.provider, Provider::Cpu);
+    }
+
+    #[test]
+    fn usage_is_one_line_without_gaps() {
+        assert!(!USAGE.contains("  "), "{USAGE}");
+        assert!(!USAGE.contains('\n'), "{USAGE}");
+        assert!(USAGE.contains("[--out-rate N] [--stream"), "{USAGE}");
     }
 
     #[test]

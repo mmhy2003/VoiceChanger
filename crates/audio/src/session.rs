@@ -8,6 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use crate::devices::Selection;
+use crate::processor::Processor;
 use crate::ring::{self, HeapCons, HeapProd};
 use crate::shared::{Endpoint, Shared, StreamStatus};
 use crate::worker::{self, OutputConfig, OutputKind, State, WorkerConfig};
@@ -47,11 +48,12 @@ pub struct SessionInfo {
     pub monitor_rate: Option<u32>,
 }
 
-/// A running session. Dropping it (or calling `stop`) stops the streams and joins the worker.
+/// A running session. Dropping it (or calling `stop`, which returns the processor) stops the
+/// streams and joins the worker.
 pub struct AudioSession {
     streams: Vec<cpal::Stream>, // input first, then cable, then monitor
     stop: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<JoinHandle<Box<dyn Processor>>>,
     info: SessionInfo,
 }
 
@@ -147,10 +149,16 @@ where
 {
     let channels = usize::from(cfg.channels);
     let shared_err = shared.clone();
+    // Set by the first sample popped: the wait for the worker's first block is not an underrun.
+    let mut started = false;
     dev.build_output_stream(
         cfg,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            ring::fill_output(data, channels, &mut cons, &shared)
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            // Only the cable's device latency is part of the end-to-end latency.
+            if which == Endpoint::Cable {
+                ring::store_device_latency(&info.timestamp(), &shared);
+            }
+            ring::fill_output(data, channels, &mut cons, &mut started, &shared)
         },
         move |err| shared_err.report(status_for(which, &err)),
         None,
@@ -188,92 +196,115 @@ fn output_stream(
     .map_err(|e| build_error(&o.name, e))
 }
 
+/// The input device and the outputs (cable first, then the monitor if it is on).
+type OpenedDevices = (Opened, Vec<(OutputKind, Endpoint, Opened)>);
+
+fn open_devices(sel: &Selection) -> Result<OpenedDevices, StartError> {
+    let host = cpal::host_from_id(cpal::HostId::Wasapi).map_err(|e| build_error("WASAPI", e))?;
+
+    let input_dev = find(host.input_devices(), &sel.input)?;
+    let cable_dev = find(host.output_devices(), &sel.cable)?;
+    let monitor_dev = match (&sel.monitor, sel.monitor_enabled) {
+        (Some(name), true) => Some((find(host.output_devices(), name)?, name)),
+        _ => None,
+    };
+
+    let input = open(input_dev, &sel.input, true)?;
+    let mut outputs = vec![(
+        OutputKind::Cable,
+        Endpoint::Cable,
+        open(cable_dev, &sel.cable, false)?,
+    )];
+    if let Some((dev, name)) = monitor_dev {
+        let monitor = open(dev, name, false)?;
+        outputs.push((OutputKind::Monitor, Endpoint::Monitor, monitor));
+    }
+    Ok((input, outputs))
+}
+
+/// Why `AudioSession::start` failed, with the processor when it could be recovered.
+pub type StartFailure = (StartError, Option<Box<dyn Processor>>);
+
 impl AudioSession {
     /// Opens the selected WASAPI devices at their default formats, starts the processing worker
-    /// and plays every stream. Resets `shared` first.
-    pub fn start(sel: &Selection, shared: Arc<Shared>) -> Result<AudioSession, StartError> {
-        let host =
-            cpal::host_from_id(cpal::HostId::Wasapi).map_err(|e| build_error("WASAPI", e))?;
-
-        let input_dev = find(host.input_devices(), &sel.input)?;
-        let cable_dev = find(host.output_devices(), &sel.cable)?;
-        let monitor_dev = match (&sel.monitor, sel.monitor_enabled) {
-            (Some(name), true) => Some((find(host.output_devices(), name)?, name)),
-            _ => None,
+    /// with `processor` and plays every stream. Resets `shared` first. On failure the processor
+    /// comes back unless the worker thread could not be spawned.
+    pub fn start(
+        sel: &Selection,
+        shared: Arc<Shared>,
+        processor: Box<dyn Processor>,
+    ) -> Result<AudioSession, StartFailure> {
+        let (input, outputs) = match open_devices(sel) {
+            Ok(devices) => devices,
+            Err(e) => return Err((e, Some(processor))),
         };
-
-        let input = open(input_dev, &sel.input, true)?;
-        let mut outputs = vec![(
-            OutputKind::Cable,
-            Endpoint::Cable,
-            open(cable_dev, &sel.cable, false)?,
-        )];
-        if let Some((dev, name)) = monitor_dev {
-            let monitor = open(dev, name, false)?;
-            outputs.push((OutputKind::Monitor, Endpoint::Monitor, monitor));
-        }
 
         shared.reset();
 
         let (in_prod, in_cons) = ring::ring(input.rate as usize * input.channels);
         let mut out_prods = Vec::with_capacity(outputs.len());
         let mut out_conses = Vec::with_capacity(outputs.len());
-        let mut max_backlogs = Vec::with_capacity(outputs.len());
         for (_, _, o) in &outputs {
-            let (prod, cons) = ring::ring(o.rate as usize);
+            let (prod, cons) = ring::ring(2 * o.rate as usize);
             out_prods.push(prod);
             out_conses.push(cons);
-            max_backlogs.push(o.rate as usize / 5);
         }
 
-        let state = State::new(&WorkerConfig {
-            in_rate: input.rate,
-            in_channels: input.channels,
-            outputs: outputs
-                .iter()
-                .map(|(kind, _, o)| OutputConfig {
-                    kind: *kind,
-                    rate: o.rate,
-                })
-                .collect(),
-        })
-        .map_err(|reason| StartError::UnsupportedConfig {
-            device: sel.input.clone(),
-            reason,
+        let proc_rate = processor.out_rate();
+        let state = State::new(
+            &WorkerConfig {
+                in_rate: input.rate,
+                in_channels: input.channels,
+                proc_rate,
+                outputs: outputs
+                    .iter()
+                    .map(|(kind, _, o)| OutputConfig {
+                        kind: *kind,
+                        rate: o.rate,
+                    })
+                    .collect(),
+            },
+            processor,
+        )
+        .map_err(|(reason, p)| {
+            let e = StartError::UnsupportedConfig {
+                device: sel.input.clone(),
+                reason,
+            };
+            (e, Some(p))
         })?;
 
-        let mut streams = Vec::with_capacity(1 + outputs.len());
-        streams.push(input_stream(&input, in_prod, &shared)?);
-        for ((_, which, o), cons) in outputs.iter().zip(out_conses) {
-            streams.push(output_stream(o, cons, &shared, *which)?);
-        }
+        // Built before the worker is spawned, so a failure still gives the processor back.
+        let streams = match build_streams(&input, &outputs, in_prod, out_conses, &shared) {
+            Ok(streams) => streams,
+            Err(e) => return Err((e, Some(state.into_processor()))),
+        };
 
         let stop = Arc::new(AtomicBool::new(false));
-        let worker = worker::spawn(
-            state,
-            in_cons,
-            out_prods,
-            max_backlogs,
-            shared.clone(),
-            stop.clone(),
-        )
-        .map_err(|e| build_error("processing thread", e))?;
+        let worker = worker::spawn(state, in_cons, out_prods, shared.clone(), stop.clone())
+            .map_err(|e| (build_error("processing thread", e), None))?;
 
         let info = SessionInfo {
             input_rate: input.rate,
             cable_rate: outputs[0].2.rate,
             monitor_rate: outputs.get(1).map(|(_, _, o)| o.rate),
         };
-        // Built before playing so Drop stops the streams and joins the worker if play fails.
-        let session = AudioSession {
+        // Built before playing so shutdown stops the streams and joins the worker if play fails.
+        let mut session = AudioSession {
             streams,
             stop,
             worker: Some(worker),
             info,
         };
         let names = std::iter::once(&input.name).chain(outputs.iter().map(|(_, _, o)| &o.name));
-        for (stream, name) in session.streams.iter().zip(names) {
-            stream.play().map_err(|e| build_error(name, e))?;
+        let play_error = session
+            .streams
+            .iter()
+            .zip(names)
+            .find_map(|(stream, name)| stream.play().err().map(|e| build_error(name, e)));
+        if let Some(e) = play_error {
+            let p = session.shutdown();
+            return Err((e, p));
         }
         Ok(session)
     }
@@ -283,21 +314,42 @@ impl AudioSession {
         self.info
     }
 
-    /// Stops the session. Same as dropping it.
-    pub fn stop(self) {}
-}
+    /// Stops the session and gives the processor back (`None` if the worker panicked).
+    pub fn stop(mut self) -> Option<Box<dyn Processor>> {
+        self.shutdown()
+    }
 
-impl Drop for AudioSession {
-    fn drop(&mut self) {
+    /// Pauses and drops the streams, then stops and joins the worker. Idempotent.
+    fn shutdown(&mut self) -> Option<Box<dyn Processor>> {
         for s in &self.streams {
             let _ = s.pause();
         }
         self.streams.clear(); // drops the cpal streams (callbacks stop)
         self.stop.store(true, Relaxed);
-        if let Some(h) = self.worker.take() {
-            let _ = h.join();
-        }
+        self.worker.take().and_then(|h| h.join().ok())
     }
+}
+
+impl Drop for AudioSession {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+/// Builds the input stream, then one output stream per output (same order).
+fn build_streams(
+    input: &Opened,
+    outputs: &[(OutputKind, Endpoint, Opened)],
+    in_prod: HeapProd<f32>,
+    out_conses: Vec<HeapCons<f32>>,
+    shared: &Arc<Shared>,
+) -> Result<Vec<cpal::Stream>, StartError> {
+    let mut streams = Vec::with_capacity(1 + outputs.len());
+    streams.push(input_stream(input, in_prod, shared)?);
+    for ((_, which, o), cons) in outputs.iter().zip(out_conses) {
+        streams.push(output_stream(o, cons, shared, *which)?);
+    }
+    Ok(streams)
 }
 
 #[cfg(test)]
@@ -306,6 +358,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::devices::Selection;
+    use crate::processor::Passthrough;
     use crate::shared::{Endpoint, Shared, StreamStatus};
 
     #[test]
@@ -339,9 +392,12 @@ mod tests {
             input: "No Such Device 7f3a".into(),
             ..Selection::default()
         };
-        match AudioSession::start(&sel, Arc::new(Shared::new())) {
-            Err(StartError::DeviceNotFound(name)) => assert_eq!(name, "No Such Device 7f3a"),
-            Err(e) => panic!("unexpected error: {e}"),
+        let processor = Box::new(Passthrough::new(48_000));
+        match AudioSession::start(&sel, Arc::new(Shared::new()), processor) {
+            Err((StartError::DeviceNotFound(name), Some(_))) => {
+                assert_eq!(name, "No Such Device 7f3a")
+            }
+            Err((e, p)) => panic!("unexpected error: {e} (processor back: {})", p.is_some()),
             Ok(_) => panic!("started with an unknown device"),
         }
     }

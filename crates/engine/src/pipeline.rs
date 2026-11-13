@@ -97,6 +97,36 @@ impl Pipeline {
         params: &Params,
     ) -> Result<Vec<f32>> {
         check_block(block_16k.len(), context)?;
+        let out = self.generate(block_16k, params)?;
+        Ok(trim_output(
+            &out,
+            context,
+            block_16k.len() - 2 * context,
+            self.sample_rate(),
+        ))
+    }
+
+    /// Converts a 16 kHz window whose first `context` samples are past audio only and returns
+    /// `window_16k[context..]` at [`Pipeline::sample_rate`].
+    pub fn convert_past(
+        &mut self,
+        window_16k: &[f32],
+        context: usize,
+        params: &Params,
+    ) -> Result<Vec<f32>> {
+        check_past(window_16k.len(), context)?;
+        let out = self.generate(window_16k, params)?;
+        Ok(trim_output(
+            &out,
+            context,
+            window_16k.len() - context,
+            self.sample_rate(),
+        ))
+    }
+
+    /// Runs the gate, ContentVec, RMVPE and the generator on a padded 16 kHz block and returns
+    /// the full generator output.
+    fn generate(&mut self, block_16k: &[f32], params: &Params) -> Result<Vec<f32>> {
         let n = padded_len(block_16k.len());
         let t = n / FRAME;
         let mut padded = block_16k.to_vec();
@@ -116,19 +146,13 @@ impl Pipeline {
         f0::shift(&mut pitchf, params.pitch_semitones);
         let pitch: Vec<i64> = pitchf.iter().map(|&f| f0::coarse(f)).collect();
 
-        let out = self.generator.run(&GenInput {
+        self.generator.run(&GenInput {
             phone: &phone,
             frames: t,
             pitch: &pitch,
             pitchf: &pitchf,
             speaker_id: params.speaker_id,
-        })?;
-        Ok(trim_output(
-            &out,
-            context,
-            block_16k.len() - 2 * context,
-            self.sample_rate(),
-        ))
+        })
     }
 }
 
@@ -155,13 +179,14 @@ pub fn frames_for(len: usize) -> usize {
     padded_len(len) / FRAME
 }
 
-/// The core of a generator output: skips the `context` frames and keeps `core` input samples'
-/// worth of audio at `sr`, padded with zeros when the output is short.
-pub fn trim_output(out: &[f32], context: usize, core: usize, sr: u32) -> Vec<f32> {
+/// A slice of a generator output at `sr`: keeps `len` input samples' worth after skipping `skip`
+/// input samples (floored to whole 10 ms frames), padded with zeros when the output is short.
+/// Both counts are 16 kHz input samples.
+pub fn trim_output(out: &[f32], skip: usize, len: usize, sr: u32) -> Vec<f32> {
     let sr = sr as usize;
     let hop = sr / 100;
-    let skip = (context / FRAME) * hop;
-    let len = core * sr / INPUT_SR;
+    let skip = (skip / FRAME) * hop;
+    let len = len * sr / INPUT_SR;
     let mut trimmed: Vec<f32> = out.iter().skip(skip).take(len).copied().collect();
     trimmed.resize(len, 0.0);
     trimmed
@@ -177,6 +202,21 @@ pub fn check_block(len: usize, context: usize) -> Result<()> {
     if len <= 2 * context {
         return Err(EngineError::Inference(format!(
             "block of {len} samples leaves no core around {context} samples of context"
+        )));
+    }
+    Ok(())
+}
+
+/// Rejects a past-context window whose context is not frame-aligned or that leaves no audio.
+pub fn check_past(len: usize, context: usize) -> Result<()> {
+    if !context.is_multiple_of(FRAME) {
+        return Err(EngineError::Inference(format!(
+            "context of {context} samples is not a multiple of {FRAME}"
+        )));
+    }
+    if len <= context {
+        return Err(EngineError::Inference(format!(
+            "window of {len} samples leaves no audio after {context} samples of context"
         )));
     }
     Ok(())
@@ -255,5 +295,27 @@ mod tests {
         ));
         assert!(check_block(3201, 1600).is_ok());
         assert!(check_block(320, 0).is_ok());
+    }
+
+    #[test]
+    fn check_past_rules() {
+        assert!(matches!(
+            check_past(9600, 100),
+            Err(EngineError::Inference(_))
+        ));
+        assert!(matches!(
+            check_past(8000, 8000),
+            Err(EngineError::Inference(_))
+        ));
+        assert!(check_past(8001, 8000).is_ok());
+        assert!(check_past(320, 0).is_ok());
+    }
+
+    #[test]
+    fn trim_output_past_keeps_tail() {
+        let out: Vec<f32> = (0..60 * 400).map(|i| i as f32).collect();
+        let got = trim_output(&out, 8000, 1600, 40000);
+        assert_eq!(got.len(), 4000);
+        assert_eq!(got[0], (50 * 400) as f32);
     }
 }

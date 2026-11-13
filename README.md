@@ -33,6 +33,9 @@ ContentVec is GPL-3.0 and is never committed. Set `VC_ASSETS_DIR` to use another
 ## Offline conversion
 
     cargo run -p vc-engine --bin vc-convert --release -- <in.wav> <out.wav> --model m.onnx [--sr N] [--pitch N] [--gate-db N] [--provider dml|cuda|cpu] [--device N] [--out-rate N]
+    cargo run -p vc-engine --bin vc-convert --release -- <in.wav> <out.wav> --model m.onnx --stream [--block-ms N] [--context-ms N] [--crossfade-ms N]
+
+The `--stream` form runs the real-time streamer over the file and prints the per-block inference p50/p95/max and the p95 as a share of the block length.
 
 - `--sr 32000|40000|48000` is needed when the model has no `sr` metadata.
 - Only RVC WebUI ONNX exports with F0 (fp32) are supported. fp16 exports and models without F0 are rejected.

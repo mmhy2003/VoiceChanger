@@ -2,6 +2,7 @@
 
 pub mod devices;
 pub mod meter;
+pub mod processor;
 pub mod ring;
 pub mod session;
 pub mod shared;
@@ -12,5 +13,6 @@ pub use devices::{
     start_blocker,
 };
 pub use meter::{Level, db_to_gain, gain_to_db};
+pub use processor::{Passthrough, Processor};
 pub use session::{AudioSession, SessionInfo, StartError};
 pub use shared::{DEFAULT_MONITOR_DB, Endpoint, Shared, StreamStatus};

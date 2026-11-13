@@ -30,10 +30,13 @@ pub enum StreamStatus {
         /// The endpoint whose stream failed.
         which: Endpoint,
     },
+    /// The voice processor returned an error.
+    ProcessorFailed,
 }
 
 impl StreamStatus {
-    // u8 codes: 0 Running; 1/2/3 DeviceLost Input/Cable/Monitor; 4/5/6 Failed Input/Cable/Monitor.
+    // u8 codes: 0 Running; 1/2/3 DeviceLost Input/Cable/Monitor; 4/5/6 Failed Input/Cable/Monitor;
+    // 7 ProcessorFailed.
     fn to_code(self) -> u8 {
         let endpoint = |which| match which {
             Endpoint::Input => 0,
@@ -44,6 +47,7 @@ impl StreamStatus {
             Self::Running => 0,
             Self::DeviceLost { which } => 1 + endpoint(which),
             Self::Failed { which } => 4 + endpoint(which),
+            Self::ProcessorFailed => 7,
         }
     }
 
@@ -57,6 +61,7 @@ impl StreamStatus {
             4..=6 => Self::Failed {
                 which: ENDPOINTS[usize::from(code - 4)],
             },
+            7 => Self::ProcessorFailed,
             _ => Self::Running,
         }
     }
@@ -73,24 +78,55 @@ pub struct Shared {
     /// Level of the signal sent to the cable.
     pub output_meter: LevelMeter,
     monitor_gain: AtomicU32, // linear gain, f32 bits
+    input_gain: AtomicU32,   // linear gain, f32 bits
+    output_gain: AtomicU32,  // linear gain, f32 bits
     status: AtomicU8,
     /// Samples dropped because a ring was full.
     pub overflows: AtomicU64,
     /// Output frames filled with silence because a ring was empty.
     pub underruns: AtomicU64,
+    /// Measured end-to-end latency in microseconds.
+    pub latency_us: AtomicU64,
+    /// Cable device latency in microseconds (playback time minus callback time).
+    pub device_latency_us: AtomicU64,
 }
 
 impl Shared {
-    /// Status `Running`, meters and counters zero, monitor gain at `DEFAULT_MONITOR_DB`.
+    /// Status `Running`, meters, counters and latencies zero, input/output gains at unity,
+    /// monitor gain at `DEFAULT_MONITOR_DB`.
     pub fn new() -> Self {
         Self {
             input_meter: LevelMeter::default(),
             output_meter: LevelMeter::default(),
             monitor_gain: AtomicU32::new(db_to_gain(DEFAULT_MONITOR_DB).to_bits()),
+            input_gain: AtomicU32::new(1.0f32.to_bits()),
+            output_gain: AtomicU32::new(1.0f32.to_bits()),
             status: AtomicU8::new(StreamStatus::Running.to_code()),
             overflows: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
+            latency_us: AtomicU64::new(0),
+            device_latency_us: AtomicU64::new(0),
         }
+    }
+
+    /// Linear input gain, applied to the mic signal before processing.
+    pub fn input_gain(&self) -> f32 {
+        f32::from_bits(self.input_gain.load(Relaxed))
+    }
+
+    /// Sets the linear input gain; takes effect on the next processed block.
+    pub fn set_input_gain(&self, gain: f32) {
+        self.input_gain.store(gain.to_bits(), Relaxed);
+    }
+
+    /// Linear output gain, applied to the processed signal.
+    pub fn output_gain(&self) -> f32 {
+        f32::from_bits(self.output_gain.load(Relaxed))
+    }
+
+    /// Sets the linear output gain; takes effect on the next processed block.
+    pub fn set_output_gain(&self, gain: f32) {
+        self.output_gain.store(gain.to_bits(), Relaxed);
     }
 
     /// Linear monitor gain.
@@ -115,13 +151,15 @@ impl Shared {
             .compare_exchange(0, status.to_code(), Relaxed, Relaxed);
     }
 
-    /// Before each session: status `Running`, meters zero, counters zero. Monitor gain is kept.
+    /// Before each session: status `Running`, meters, counters and latencies zero. Gains are kept.
     pub fn reset(&self) {
         self.status.store(StreamStatus::Running.to_code(), Relaxed);
         self.input_meter.reset();
         self.output_meter.reset();
         self.overflows.store(0, Relaxed);
         self.underruns.store(0, Relaxed);
+        self.latency_us.store(0, Relaxed);
+        self.device_latency_us.store(0, Relaxed);
     }
 }
 
@@ -137,7 +175,7 @@ mod tests {
     use crate::meter::Level;
     use std::sync::atomic::Ordering::Relaxed;
 
-    const ALL: [StreamStatus; 7] = [
+    const ALL: [StreamStatus; 8] = [
         StreamStatus::Running,
         StreamStatus::DeviceLost {
             which: Endpoint::Input,
@@ -157,6 +195,7 @@ mod tests {
         StreamStatus::Failed {
             which: Endpoint::Monitor,
         },
+        StreamStatus::ProcessorFailed,
     ];
 
     #[test]
@@ -217,5 +256,31 @@ mod tests {
         assert_eq!(shared.monitor_gain(), db_to_gain(DEFAULT_MONITOR_DB));
         assert!((shared.monitor_gain() - 0.501).abs() < 1e-3);
         assert_eq!(shared.status(), StreamStatus::Running);
+    }
+
+    #[test]
+    fn gains_default_unity_and_survive_reset() {
+        let shared = Shared::new();
+        assert_eq!(shared.input_gain(), 1.0);
+        assert_eq!(shared.output_gain(), 1.0);
+
+        shared.set_input_gain(2.0);
+        shared.set_output_gain(0.5);
+        shared.reset();
+
+        assert_eq!(shared.input_gain(), 2.0);
+        assert_eq!(shared.output_gain(), 0.5);
+    }
+
+    #[test]
+    fn reset_zeroes_latency() {
+        let shared = Shared::new();
+        shared.latency_us.store(450_000, Relaxed);
+        shared.device_latency_us.store(20_000, Relaxed);
+
+        shared.reset();
+
+        assert_eq!(shared.latency_us.load(Relaxed), 0);
+        assert_eq!(shared.device_latency_us.load(Relaxed), 0);
     }
 }

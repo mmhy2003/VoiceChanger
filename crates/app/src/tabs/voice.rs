@@ -1,4 +1,4 @@
-//! Voice tab: Start/Stop, level meters, status and the device-loss banner.
+//! Voice tab: model picker, Start/Stop, live voice controls, level meters, status and the banner.
 
 use eframe::egui;
 use vc_audio::{AudioSession, SessionInfo, start_blocker};
@@ -20,22 +20,55 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
         }
     }
 
+    ui.horizontal(|ui| {
+        ui.label(app.model.label());
+        let busy = app.is_running() || app.model.is_loading() || app.pick_rx.is_some();
+        if ui.add_enabled(!busy, egui::Button::new("Model…")).clicked() {
+            app.pick_model();
+        }
+    });
+
     if app.is_running() {
         if ui.button("■ Stop").clicked() {
             app.stop();
         }
     } else {
         let blocker = start_blocker(&app.state.devices, &app.state.selection);
+        let ready = app.model.is_ready();
         if ui
-            .add_enabled(blocker.is_none(), egui::Button::new("▶ Start"))
+            .add_enabled(ready && blocker.is_none(), egui::Button::new("▶ Start"))
             .clicked()
         {
             app.start();
         }
         if let Some(blocker) = blocker {
             ui.label(blocker);
+        } else if !ready {
+            ui.label("Pick a model first");
         }
     }
+
+    let voice = &mut app.state.voice;
+    ui.add(
+        egui::Slider::new(&mut voice.pitch, -24..=24)
+            .text("Pitch")
+            .suffix(" st"),
+    );
+    ui.add(
+        egui::Slider::new(&mut voice.input_db, -20.0..=20.0)
+            .text("Input gain")
+            .suffix(" dB"),
+    );
+    ui.add(
+        egui::Slider::new(&mut voice.output_db, -20.0..=20.0)
+            .text("Output gain")
+            .suffix(" dB"),
+    );
+    ui.add(
+        egui::Slider::new(&mut voice.gate_db, -90.0..=-20.0)
+            .text("Noise gate")
+            .suffix(" dB"),
+    );
 
     widgets::meter(ui, "Input", app.input_meter.shown);
     widgets::meter(ui, "Output", app.output_meter.shown);
@@ -56,7 +89,7 @@ pub fn status_line(info: Option<SessionInfo>) -> String {
 }
 
 /// 48000 -> "48 kHz", 44100 -> "44.1 kHz".
-fn khz(rate: u32) -> String {
+pub(crate) fn khz(rate: u32) -> String {
     let text = format!("{:.1}", f64::from(rate) / 1000.0);
     format!("{} kHz", text.strip_suffix(".0").unwrap_or(&text))
 }

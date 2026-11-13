@@ -1,9 +1,13 @@
 //! End-to-end conversion with a user-supplied RVC v2 model (`VC_TEST_MODEL`).
 
 use std::f32::consts::TAU;
+use std::sync::Arc;
 
 use vc_engine::offline::{read_wav_mono, write_wav_f32};
-use vc_engine::{ConvertOptions, Provider, convert_file};
+use vc_engine::{
+    Controls, ConvertOptions, Pipeline, PipelineConfig, Provider, StreamSettings, StreamStats,
+    Streamer, convert_file,
+};
 
 const SR: u32 = 16_000;
 
@@ -32,17 +36,23 @@ fn voiced_signal() -> Vec<f32> {
     raw
 }
 
+fn test_model() -> String {
+    std::env::var("VC_TEST_MODEL")
+        .expect("set VC_TEST_MODEL to an RVC v2 WebUI ONNX export (and VC_TEST_MODEL_SR if needed)")
+}
+
+fn test_model_sr() -> Option<u32> {
+    std::env::var("VC_TEST_MODEL_SR")
+        .ok()
+        .map(|s| s.parse().expect("VC_TEST_MODEL_SR must be a sample rate"))
+}
+
 #[test]
 #[ignore = "needs VC_TEST_MODEL (an RVC v2 WebUI ONNX export) and `cargo xtask fetch-models`"]
 fn converts_voiced_signal() {
-    let model = std::env::var("VC_TEST_MODEL").expect(
-        "set VC_TEST_MODEL to an RVC v2 WebUI ONNX export (and VC_TEST_MODEL_SR if needed)",
-    );
-    let mut opts = ConvertOptions::new(model);
+    let mut opts = ConvertOptions::new(test_model());
     opts.provider = Provider::Cpu;
-    opts.sr_override = std::env::var("VC_TEST_MODEL_SR")
-        .ok()
-        .map(|s| s.parse().expect("VC_TEST_MODEL_SR must be a sample rate"));
+    opts.sr_override = test_model_sr();
 
     let dir = std::env::temp_dir();
     let input = dir.join(format!("vc-engine-e2e-{}-in.wav", std::process::id()));
@@ -63,5 +73,38 @@ fn converts_voiced_signal() {
     assert!(y.len().abs_diff(48_000) <= 320, "length {}", y.len());
     assert!(y.iter().all(|v| v.is_finite()));
     let rms = (y.iter().map(|v| v * v).sum::<f32>() / y.len() as f32).sqrt();
+    assert!(rms > 1e-3, "rms {rms}");
+}
+
+#[test]
+#[ignore = "needs VC_TEST_MODEL (an RVC v2 WebUI ONNX export) and `cargo xtask fetch-models`"]
+fn streams_voiced_signal() {
+    let settings = StreamSettings::default();
+    let pipeline = Pipeline::new(&PipelineConfig {
+        model: test_model().into(),
+        sr_override: test_model_sr(),
+        provider: Provider::Cpu,
+        warmup_len: settings.window_16k(),
+        warmup_context: 0,
+    })
+    .unwrap();
+    let sr = pipeline.sample_rate() as usize;
+    let mut streamer = Streamer::new(
+        pipeline,
+        settings,
+        Arc::new(Controls::new()),
+        Arc::new(StreamStats::new()),
+    );
+    streamer.prepare(SR).unwrap();
+
+    let mut out = Vec::new();
+    for chunk in voiced_signal().chunks(320) {
+        streamer.process(chunk, &mut out).unwrap();
+    }
+
+    assert_eq!(out.len(), 12 * (4000 * sr / 16_000));
+    assert!(out.iter().all(|v| v.is_finite()));
+    let half = &out[out.len() / 2..];
+    let rms = (half.iter().map(|v| v * v).sum::<f32>() / half.len() as f32).sqrt();
     assert!(rms > 1e-3, "rms {rms}");
 }

@@ -55,17 +55,25 @@ The `--stream` form runs the real-time streamer over the file and prints the per
 
 Import a voice on the Models tab with **Import…** or by dropping `.onnx` files on the window. Each model is checked and copied into the library. If the model does not say its sample rate, the app asks for it (32, 40 or 48 kHz). A dropped or picked `.pth` or `.zip` is not imported: the app offers to open it in the Convert tab instead. Dropping it on the Convert tab opens it there directly.
 
-VoiceChanger keeps its files in three folders:
+VoiceChanger keeps its files in four folders:
 
 | Folder | Contents |
 |---|---|
 | `%APPDATA%\VoiceChanger\models` | The imported models, their icons and the `library.toml` index |
 | `%APPDATA%\VoiceChanger\config` | `settings.toml`: devices, last model, pitch per model and every control |
 | `%LOCALAPPDATA%\VoiceChanger\logs` | Daily rotating log files (Settings → General → **Open logs folder**) |
+| `%LOCALAPPDATA%\VoiceChanger\updates` | Downloaded installers; old ones are deleted at startup |
 
 The global Start/Stop hotkey is off by default. Set it in Settings → General; the combination needs at least one modifier (Ctrl, Alt or Shift); Esc cancels recording.
 
 If `settings.toml` or `library.toml` cannot be read, it is kept as `settings.toml.bad` or `library.toml.bad` and the app starts with defaults or an empty library. Model files are never deleted.
+
+## Updates and privacy
+
+- Updates are the app's only network use. Every 6 hours it asks `api.github.com` for the latest release of `mmhy2003/VoiceChanger`. It downloads the installer and `SHA256SUMS.txt` from GitHub only for an update. No account, token or personal data is sent, only a `VoiceChanger/X.Y.Z` user agent.
+- You can turn this off in Settings → General → "Check for updates automatically"; **Check for updates** still works on demand. Drafts and pre-releases are never offered.
+- Downloads go to `%LOCALAPPDATA%\VoiceChanger\updates`. A file whose SHA-256 (or signature, once releases are signed) does not match is deleted.
+- Updating stops the voice, runs the installer with `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH` (log: `%LOCALAPPDATA%\VoiceChanger\logs\update-install.log`), and reopens the app. An all-users install asks for UAC.
 
 ## Converting PyTorch models
 

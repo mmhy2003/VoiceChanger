@@ -16,6 +16,7 @@ mod switch;
 mod tabs;
 #[cfg(test)]
 mod testutil;
+mod update;
 mod widgets;
 
 use std::path::Path;

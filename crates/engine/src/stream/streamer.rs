@@ -76,7 +76,9 @@ impl<C: Convert> Streamer<C> {
             stats,
             resampler: None,
             resampled: Vec::new(),
-            fresh: Vec::with_capacity(2 * settings.block_16k()),
+            // Up to a block short of a conversion plus one call's input (the worker passes up to
+            // 1 s of backlog at once).
+            fresh: Vec::with_capacity(2 * settings.block_16k() + 16_000),
             history: vec![0.0; settings.window_16k()],
             sola,
         }

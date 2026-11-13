@@ -283,7 +283,8 @@ pub fn process_block(state: &mut State, interleaved: &[f32], shared: &Shared) {
 /// Spawns thread "vc-audio-worker". `outputs[i]` feeds `state.output(i)`. Each ring is primed
 /// with `PRIME_MS` of zeros before its first block, and a block is dropped when it would take the
 /// backlog past the block plus `PRIME_MS + SLACK_MS`. After each block that reached the cable,
-/// stores the end-to-end latency in `shared.latency_us`. Prepares the processor, skips the input
+/// stores the end-to-end latency in `shared.latency_us`. Each iteration processes the whole input
+/// backlog (up to the ring's capacity). Prepares the processor, skips the input
 /// queued meanwhile, then runs until `stop` is true and returns the processor.
 pub fn spawn(
     mut state: State,
@@ -299,7 +300,9 @@ pub fn spawn(
             input.skip(input.occupied_len());
             let ch = state.in_channels;
             let cable = state.cable_index();
-            let mut scratch = vec![0.0f32; ch * (state.in_rate / 50).max(1)];
+            // The whole backlog goes to the processor at once, so a processor slower than real
+            // time sees it (and can drop late blocks) instead of it piling up in the input ring.
+            let mut scratch = vec![0.0f32; input.capacity().get()];
             while !stop.load(Relaxed) {
                 let take = input.occupied_len().min(scratch.len()) / ch * ch;
                 if take == 0 {
@@ -338,7 +341,7 @@ mod tests {
     use super::*;
     use std::any::Any;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
     use std::time::{Duration, Instant};
 
     use ringbuf::traits::{Consumer, Observer, Producer};
@@ -661,6 +664,78 @@ mod tests {
             .downcast::<Fake>()
             .unwrap();
         assert_eq!(fake.calls, 0);
+    }
+
+    /// Converts `block` samples at a time (like `Streamer`), each taking `cost`. When a whole extra
+    /// block is waiting, the oldest one is dropped and counted in `late`.
+    struct SlowBlocks {
+        block: usize,
+        cost: Duration,
+        fresh: Vec<f32>,
+        late: Arc<AtomicUsize>,
+    }
+
+    impl Processor for SlowBlocks {
+        fn out_rate(&self) -> u32 {
+            16_000
+        }
+
+        fn delay(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), String> {
+            self.fresh.extend_from_slice(input);
+            while self.fresh.len() >= 2 * self.block {
+                self.fresh.drain(..self.block);
+                self.late.fetch_add(1, Relaxed);
+            }
+            if self.fresh.len() >= self.block {
+                std::thread::sleep(self.cost);
+                out.extend(self.fresh.drain(..self.block));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn slow_processor_drops_late_blocks_and_bounds_backlog() {
+        const RATE: usize = 16_000;
+        let block = RATE / 10; // 100 ms
+        let late = Arc::new(AtomicUsize::new(0));
+        let slow = SlowBlocks {
+            block,
+            cost: Duration::from_millis(150),
+            fresh: Vec::new(),
+            late: late.clone(),
+        };
+        let c = cfg(RATE as u32, 1, &[(OutputKind::Cable, RATE as u32)]);
+        let state = State::new(&c, Box::new(slow)).map_err(|(e, _)| e).unwrap();
+        let (mut in_prod, in_cons) = ring(RATE);
+        let (out_prod, _out_cons) = ring(2 * RATE);
+        let shared = Arc::new(Shared::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = spawn(state, in_cons, vec![out_prod], shared, stop.clone()).unwrap();
+
+        // Feed in real time for 2 s; inference runs at 1.5x real time.
+        let started = Instant::now();
+        let mut fed = 0;
+        let mut max_backlog = 0;
+        while started.elapsed() < Duration::from_secs(2) {
+            let due = (started.elapsed().as_micros() as usize * RATE / 1_000_000).min(2 * RATE);
+            fed += in_prod.push_slice(&vec![0.1; due - fed]);
+            max_backlog = max_backlog.max(in_prod.occupied_len());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop.store(true, Relaxed);
+        handle.join().unwrap();
+
+        assert!(late.load(Relaxed) > 0, "no late block counted");
+        // One conversion's worth of input (150 ms) plus scheduling jitter, far below the ring.
+        assert!(
+            max_backlog < 3 * block,
+            "input backlog reached {max_backlog}"
+        );
     }
 
     #[test]

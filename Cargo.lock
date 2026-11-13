@@ -4405,6 +4405,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "vc-audio",
+ "vc-convert",
  "vc-engine",
  "vc-models",
 ]

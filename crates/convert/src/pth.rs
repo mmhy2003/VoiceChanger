@@ -115,8 +115,17 @@ impl PthArchive {
                 return Err(ConvertError::NotPyTorch);
             }
         };
-        let mut data = Vec::new();
+        // storage_numel comes from the pickle, unbounded; the declared size is
+        // capped by MAX_TOTAL, so check it before inflating anything.
         let wanted = u64::try_from(storage_len).map_err(|_| ConvertError::NotPyTorch)?;
+        if entry.size() < wanted {
+            tracing::warn!(
+                "{path}: storage declares {} bytes, expected {storage_len}",
+                entry.size()
+            );
+            return Err(ConvertError::NotPyTorch);
+        }
+        let mut data = Vec::new();
         entry.take(wanted).read_to_end(&mut data).map_err(|e| {
             tracing::warn!("{path}: {e}");
             ConvertError::NotPyTorch
@@ -336,9 +345,8 @@ mod tests {
     fn nested_zip_with_one_pth() {
         let pth = model();
         let outer = zip_of(&[("voice/voice.pth", &pth), ("voice/added_x.index", b"idx")]);
-        let archive = open_ok(outer, "voice.zip");
+        let mut archive = open_ok(outer, "voice.zip");
         assert_eq!(archive.name, "voice.pth");
-        let mut archive = archive;
         let t = w(&archive);
         assert_eq!(archive.tensor_f32(&t).unwrap(), [1.0, 2.0]);
     }
@@ -395,6 +403,37 @@ mod tests {
     fn short_storage_is_not_pytorch() {
         let t = tensor("0", DType::F32, 4, 0, &[2]);
         let bytes = one_tensor(t, f32_bytes(&[1.0, 2.0, 3.0]));
+        assert!(matches!(read_w(bytes), Err(ConvertError::NotPyTorch)));
+    }
+
+    /// `zip` with the declared uncompressed size of entry `name` set to
+    /// `size` in both its local and its central header.
+    fn with_declared_size(mut zip: Vec<u8>, name: &str, size: u32) -> Vec<u8> {
+        // (signature, offset of the uncompressed size, offset of the name length, offset of the name)
+        let headers: [(&[u8], usize, usize, usize); 2] =
+            [(b"PK\x03\x04", 22, 26, 30), (b"PK\x01\x02", 24, 28, 46)];
+        let mut patched = 0;
+        for at in 0..zip.len().saturating_sub(46) {
+            for (sig, size_at, len_at, name_at) in headers {
+                let len = usize::from(u16::from_le_bytes([zip[at + len_at], zip[at + len_at + 1]]));
+                if zip[at..].starts_with(sig)
+                    && zip[at + name_at..].starts_with(name.as_bytes())
+                    && len == name.len()
+                {
+                    zip[at + size_at..at + size_at + 4].copy_from_slice(&size.to_le_bytes());
+                    patched += 1;
+                }
+            }
+        }
+        assert_eq!(patched, 2, "patched both headers of {name}");
+        zip
+    }
+
+    #[test]
+    fn storage_declared_shorter_is_not_pytorch() {
+        let values = [1.0, 2.0, 3.0, 4.0];
+        let t = tensor("0", DType::F32, 4, 0, &[4]);
+        let bytes = with_declared_size(one_tensor(t, f32_bytes(&values)), "archive/data/0", 4);
         assert!(matches!(read_w(bytes), Err(ConvertError::NotPyTorch)));
     }
 

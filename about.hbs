@@ -1,0 +1,17 @@
+## Rust crates
+
+VoiceChanger is built from the Rust crates below. Each licence is listed once, followed by the crates that use it.
+
+{{#each licenses}}
+### {{name}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

@@ -7,3 +7,4 @@ pub mod schedule;
 mod testserver;
 pub mod verify;
 pub mod version;
+pub mod worker;

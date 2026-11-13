@@ -16,7 +16,7 @@ use vc_audio::{
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
 use crate::config::{Config, DevicesConfig, PerfConfig, Prefs, SaveTracker, SavedDevice};
-use vc_models::Library;
+use vc_models::{Library, ModelEntry};
 
 use crate::engine::{EngineProcessor, ErrorSlot};
 use crate::files;
@@ -24,6 +24,7 @@ use crate::import::{DropAction, Importer, Notice, classify_drop};
 use crate::model::{self, ModelSlot, provider_label};
 use crate::paths::AppDirs;
 use crate::status_bar::{self, StatusSnapshot};
+use crate::switch::{PendingSwitch, SwitchPlan, pitch_for, plan_switch};
 use crate::tabs;
 use crate::widgets::MeterState;
 
@@ -244,10 +245,8 @@ pub struct VcApp {
     pub(crate) input_meter: MeterState,
     pub(crate) output_meter: MeterState,
     pub(crate) model: ModelSlot<Pipeline>,
-    /// The last model file chosen, reloaded when the provider changes.
-    pub(crate) model_path: Option<PathBuf>,
-    /// The open file picker's answer.
-    pub(crate) pick_rx: Option<Receiver<Option<PathBuf>>>,
+    /// The library model whose generator is loading, to swap in when ready.
+    pub(crate) pending: Option<PendingSwitch>,
     /// Pitch and gate, read by the streamer once per block.
     controls: Arc<Controls>,
     /// Inference timings written by the streamer.
@@ -261,7 +260,7 @@ pub struct VcApp {
     /// Where the settings, models and logs live.
     dirs: AppDirs,
     /// The saved preferences that live outside `state`.
-    prefs: Prefs,
+    pub(crate) prefs: Prefs,
     /// Writes the settings a moment after they change.
     save: SaveTracker,
     /// The imported voice models.
@@ -302,7 +301,7 @@ impl VcApp {
             .map(String::as_str)
             .collect();
         let banner = (!notes.is_empty()).then(|| notes.join(" "));
-        Self {
+        let mut app = Self {
             tab: Tab::default(),
             state,
             audio,
@@ -312,8 +311,7 @@ impl VcApp {
             input_meter: MeterState::default(),
             output_meter: MeterState::default(),
             model: ModelSlot::default(),
-            model_path: None,
-            pick_rx: None,
+            pending: None,
             controls: Arc::new(Controls::new()),
             stats: Arc::new(StreamStats::new()),
             processor_error: ErrorSlot::default(),
@@ -329,7 +327,14 @@ impl VcApp {
             notices: Vec::new(),
             convert_file: None,
             import_pick_rx: None,
+        };
+        // Load the last model; the app never starts streaming by itself.
+        if let Some(id) = app.prefs.last_model.clone()
+            && app.library.get(&id).is_some()
+        {
+            app.select_model(&id);
         }
+        app
     }
 
     /// Opens the Import… picker; its answer is polled in `update`.
@@ -394,34 +399,120 @@ impl VcApp {
         self.save.mark_saved(cfg);
     }
 
-    /// Opens the model file picker; its answer is polled in `update`.
-    pub(crate) fn pick_model(&mut self) {
-        self.pick_rx = Some(model::pick_model());
-    }
-
-    /// Starts loading the model at `path` with the current Performance settings.
-    pub(crate) fn load_model(&mut self, path: PathBuf) {
-        let name = model::model_name(&path);
-        let perf = self.state.perf;
-        self.model = match model::spawn_load(path.clone(), perf.provider(), perf.stream) {
-            Ok(rx) => ModelSlot::loading(name, rx),
-            Err(e) => ModelSlot::Failed(e.to_string()),
+    /// Makes the library model `id` the active one: loads it, or loads its generator to swap in
+    /// (also while running). The newest request wins.
+    pub(crate) fn select_model(&mut self, id: &str) {
+        let Some(entry) = self.library.get(id).cloned() else {
+            return;
         };
-        self.model_path = Some(path);
-    }
-
-    /// Picks up the file picker's answer and the loader's result.
-    fn poll_model(&mut self) {
-        if let Some(rx) = &self.pick_rx {
-            match rx.try_recv() {
-                Ok(Some(path)) => {
-                    self.pick_rx = None;
-                    self.load_model(path);
+        if !self.library.file_exists(&entry) {
+            self.banner = Some(format!("The model file for \"{}\" is missing.", entry.name));
+            return;
+        }
+        if self.prefs.last_model.as_deref() == Some(id) && self.model.info().is_some() {
+            // Already active.
+            self.pending = None;
+            return;
+        }
+        let (path, perf) = (self.library.model_path(&entry), self.state.perf);
+        match plan_switch(self.model.info().is_some(), self.is_running()) {
+            SwitchPlan::LoadAll => {
+                self.pending = None;
+                self.model = match model::spawn_load(
+                    entry.name.clone(),
+                    path,
+                    Some(entry.sample_rate),
+                    perf.provider(),
+                    perf.stream,
+                ) {
+                    Ok(rx) => ModelSlot::loading(entry.name.clone(), rx),
+                    Err(e) => ModelSlot::Failed(e.to_string()),
+                };
+                self.activate(&entry);
+            }
+            SwitchPlan::Swap | SwitchPlan::SwapWithRestart => {
+                match model::spawn_generator_load(
+                    entry.name.clone(),
+                    path,
+                    entry.sample_rate,
+                    perf.provider(),
+                    perf.stream,
+                ) {
+                    // Replacing the pending switch drops the older loader's receiver.
+                    Ok(rx) => {
+                        self.pending = Some(PendingSwitch {
+                            id: entry.id.clone(),
+                            name: entry.name.clone(),
+                            rx,
+                        });
+                    }
+                    Err(e) => {
+                        self.banner = Some(format!("Could not switch to \"{}\": {e}", entry.name));
+                    }
                 }
-                Ok(None) | Err(TryRecvError::Disconnected) => self.pick_rx = None,
-                Err(TryRecvError::Empty) => {}
             }
         }
+    }
+
+    /// Remembers `entry` as the last model and sets its pitch.
+    fn activate(&mut self, entry: &ModelEntry) {
+        self.prefs.last_model = Some(entry.id.clone());
+        self.state.voice.pitch =
+            pitch_for(&entry.id, &self.prefs.pitch_by_model, entry.default_pitch);
+    }
+
+    /// Swaps in a pending generator once it is loaded, with a quick stop and start while running.
+    /// A failed load keeps the old voice.
+    fn poll_switch(&mut self) {
+        let Some(pending) = &self.pending else {
+            return;
+        };
+        let result = match pending.rx.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                Err("the model loader stopped unexpectedly".to_string())
+            }
+            Ok(result) => result,
+        };
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        let (generator, info) = match result {
+            Ok(loaded) => loaded,
+            Err(msg) => {
+                self.banner = Some(format!("Could not switch to \"{}\": {msg}", pending.name));
+                return;
+            }
+        };
+        let running = self.is_running();
+        if running {
+            self.stop();
+        }
+        if let Some((p, slot_info)) = self.model.ready_mut() {
+            drop(p.swap_generator(generator));
+            *slot_info = info;
+            if let Some(entry) = self.library.get(&pending.id).cloned() {
+                self.activate(&entry);
+            }
+        } else {
+            self.banner = Some("Could not switch: the model was unloaded.".to_string());
+        }
+        if running {
+            self.start();
+        }
+    }
+
+    /// Saves the pitch slider's value for the active model.
+    pub(crate) fn pitch_changed(&mut self) {
+        if let Some(id) = &self.prefs.last_model {
+            self.prefs
+                .pitch_by_model
+                .insert(id.clone(), self.state.voice.pitch);
+        }
+    }
+
+    /// Picks up the loader's result.
+    fn poll_model(&mut self) {
         if let Some(Err(msg)) = self.model.poll() {
             self.banner = Some(format!("Could not load the model: {msg}"));
         }
@@ -551,7 +642,7 @@ impl VcApp {
 pub(crate) const AUDIO_DEAD: &str = "The audio thread stopped unexpectedly. Restart VoiceChanger.";
 
 /// Banner text when a stopped session did not hand the model back.
-const MODEL_LOST: &str = "The model was unloaded; choose it again with Model…";
+const MODEL_LOST: &str = "The model was unloaded; choose it again from the Model list.";
 
 impl eframe::App for VcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -561,6 +652,7 @@ impl eframe::App for VcApp {
         }
         self.poll_status();
         self.poll_model();
+        self.poll_switch();
         self.handle_drops(ctx);
         self.poll_import();
         self.shared
@@ -602,15 +694,17 @@ impl eframe::App for VcApp {
         // A new provider or GPU needs a fresh session, so the model is reloaded.
         if self.state.perf.provider() != provider_before
             && !self.is_running()
-            && let Some(path) = &self.model_path
+            && let Some(id) = self.prefs.last_model.clone()
         {
-            self.load_model(path.clone());
+            self.pending = None;
+            self.model = ModelSlot::Empty;
+            self.select_model(&id);
         }
 
         if self.is_running() {
             ctx.request_repaint_after(Duration::from_millis(33));
         } else if self.model.is_loading()
-            || self.pick_rx.is_some()
+            || self.pending.is_some()
             || self.importer.is_busy()
             || self.import_pick_rx.is_some()
         {

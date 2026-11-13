@@ -56,13 +56,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
     if app.library.entries().is_empty() {
         ui.label("No models yet. Import an RVC v2 .onnx file or drop one on the window.");
     }
+    let mut picked = None;
     for entry in app.library.entries() {
         ui.horizontal(|ui| {
-            ui.label(format!("{} · {}", entry.name, khz(entry.sample_rate)));
+            let is_active = app.prefs.last_model.as_deref() == Some(entry.id.as_str());
+            if ui.selectable_label(is_active, &entry.name).clicked() {
+                picked = Some(entry.id.clone());
+            }
+            ui.label(khz(entry.sample_rate));
             if !app.library.file_exists(entry) {
                 ui.colored_label(ui.visuals().error_fg_color, "file missing");
             }
         });
+    }
+    if let Some(id) = picked {
+        app.select_model(&id);
     }
 }
 

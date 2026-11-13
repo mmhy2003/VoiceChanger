@@ -9,6 +9,7 @@ mod import;
 mod model;
 mod paths;
 mod status_bar;
+mod switch;
 mod tabs;
 #[cfg(test)]
 mod testutil;

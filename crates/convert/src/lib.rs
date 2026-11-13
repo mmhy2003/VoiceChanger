@@ -5,6 +5,7 @@ mod error;
 pub mod onnx;
 pub mod pickle;
 pub mod pth;
+pub mod template;
 #[cfg(test)]
 mod testutil;
 

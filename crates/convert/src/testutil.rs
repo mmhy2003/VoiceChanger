@@ -3,7 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::checkpoint::ArchConfig;
+use crate::onnx::{FLOAT, GraphProto, ModelProto, TensorProto};
 use crate::pickle::DType;
+use crate::template::{Template, TemplateInfo};
 
 /// A value to pickle. `Global` emits a bare GLOBAL and `Raw` is copied as is,
 /// so tests can build input the writer would never produce.
@@ -393,4 +396,46 @@ pub fn rvc_pth(f: &Fixture) -> Vec<u8> {
         .map(|(k, b)| (k.as_str(), b.clone()))
         .collect();
     torch_zip("archive", &pickle(&P::OrderedDict(root)), &storages)
+}
+
+/// A tiny template for `cfg`: stripped FLOAT initializers
+/// `enc_p.emb_phone.weight` [192, 768], `emb_g.weight` [109, 256] and
+/// `dec.conv_pre.weight` [512, 192, 7], as in [`Fixture::v2_40k`], and one
+/// constant `c` that keeps its data.
+pub fn toy_template(cfg: ArchConfig) -> Template {
+    let stripped = |name: &str, dims: &[i64]| TensorProto {
+        name: Some(name.into()),
+        dims: dims.to_vec(),
+        data_type: Some(FLOAT),
+        ..Default::default()
+    };
+    let model = ModelProto {
+        ir_version: Some(8),
+        graph: Some(GraphProto {
+            initializer: vec![
+                stripped("enc_p.emb_phone.weight", &[192, 768]),
+                stripped("emb_g.weight", &[109, 256]),
+                TensorProto {
+                    name: Some("c".into()),
+                    dims: vec![2],
+                    data_type: Some(FLOAT),
+                    raw_data: Some(f32_bytes(&[1.0, 2.0])),
+                    ..Default::default()
+                },
+                stripped("dec.conv_pre.weight", &[512, 192, 7]),
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    Template {
+        info: TemplateInfo {
+            file: "toy.onnx".into(),
+            sha256: String::new(),
+            rvc_commit: String::new(),
+            torch: String::new(),
+            config: cfg,
+        },
+        bytes: Vec::leak(crate::onnx::encode(&model)),
+    }
 }

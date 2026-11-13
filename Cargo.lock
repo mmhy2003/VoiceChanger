@@ -4345,7 +4345,9 @@ dependencies = [
  "half",
  "prost",
  "serde",
+ "sha2",
  "thiserror 2.0.21",
+ "toml",
  "tracing",
  "zip",
 ]

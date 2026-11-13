@@ -4,8 +4,9 @@ Installs, upgrades and uninstalls a built Setup-VoiceChanger-<Version>.exe and c
 CI runs it after the installer smoke build, and release.yml runs it before publishing.
 .DESCRIPTION
 Checks: per-user install without admin, files and file version, `voicechanger.exe --self-test`,
-the VB-CABLE check (against fake endpoints under HKCU), upgrade keeps user data, a silent
-uninstall keeps it and /PURGEDATA removes it.
+the VB-CABLE check (against fake endpoints under HKCU), upgrade keeps user data, the in-app
+updater's /SILENT /RELAUNCH upgrade starts voicechanger.exe again while a silent install without
+/RELAUNCH does not, a silent uninstall keeps user data and /PURGEDATA removes it.
 It deletes %APPDATA%\VoiceChanger and %LOCALAPPDATA%\VoiceChanger, so it refuses to run when
 they or an install already exist: run it on a clean machine (a CI runner or Windows Sandbox).
 .EXAMPLE
@@ -38,10 +39,10 @@ function Assert([bool] $Condition, [string] $Message) {
     Write-Host "ok: $Message"
 }
 
-function Install([string] $Path, [string] $Name, [string[]] $Extra = @()) {
+function Install([string] $Path, [string] $Name, [string[]] $Extra = @(), [string] $Quiet = '/VERYSILENT') {
     $log = Join-Path $logs "$Name.log"
     $p = Start-Process -FilePath $Path -Wait -PassThru `
-        -ArgumentList (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"") + $Extra)
+        -ArgumentList (@($Quiet, '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"") + $Extra)
     Assert ($p.ExitCode -eq 0) "$Name exits with 0 (got $($p.ExitCode), log $log)"
     Get-Content -Raw $log
 }
@@ -90,7 +91,7 @@ try {
         Install $Setup 'install-first' | Out-Null
     }
     Seed-UserData
-    $log = Install $Setup 'upgrade'
+    $log = Install $Setup 'upgrade' @('/RELAUNCH') '/SILENT'
 
     Assert ($log -match 'Administrative install mode: No') 'setup runs without admin rights'
     Assert ($log -match 'Install mode root key: HKEY_CURRENT_USER') 'setup installs per user'
@@ -104,6 +105,26 @@ try {
     $exeVersion = (Get-Item (Join-Path $appDir 'voicechanger.exe')).VersionInfo.FileVersion.Trim()
     Assert ($exeVersion -eq $FileVersion) "voicechanger.exe has file version $FileVersion (got '$exeVersion')"
     Assert (Test-UserData) 'the upgrade keeps settings and imported models'
+
+    # The in-app updater passes /RELAUNCH: setup starts the installed app again, also when silent.
+    $exe = Join-Path $appDir 'voicechanger.exe'
+    Assert ($log -match '-- Run entry --') '/RELAUNCH runs a [Run] entry'
+    Assert ($log -match [regex]::Escape("Filename: $exe")) "/RELAUNCH starts $exe"
+    # The app logs "VoiceChanger starting" before it opens its window, so no GPU is needed.
+    $deadline = (Get-Date).AddSeconds(30)
+    $started = $false
+    while (-not $started -and (Get-Date) -lt $deadline) {
+        $started = @(Get-ChildItem -File (Join-Path $local 'logs') -ErrorAction SilentlyContinue |
+            Where-Object { (Get-Content -Raw $_.FullName) -match 'VoiceChanger starting' }).Count -gt 0
+        if (-not $started) { Start-Sleep -Seconds 1 }
+    }
+    Assert $started "the relaunched app logs 'VoiceChanger starting' in $local\logs"
+    Get-Process voicechanger -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
+    $deadline = (Get-Date).AddSeconds(10)
+    while (@(Get-Process voicechanger -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }).Count -gt 0) {
+        if ((Get-Date) -gt $deadline) { throw "FAIL: the relaunched voicechanger.exe did not stop within 10 seconds" }
+        Start-Sleep -Milliseconds 500
+    }
 
     # 2. The installed app finds its bundled models and runtime and runs them.
     $out = Join-Path $logs 'self-test.txt'
@@ -121,6 +142,7 @@ try {
         -PropertyType String -Value 'CABLE Input' | Out-Null
     $log = Install $Setup 'reinstall-with-cable' @("/CableRegistryKey=$fakeCables")
     Assert ($log -match 'VoiceChanger: virtual cable found') 'with a cable: the finish page does not offer the download'
+    Assert ($log -notmatch '-- Run entry --') 'without /RELAUNCH a silent install does not start the app'
 
     # 4. A silent uninstall keeps user data; /PURGEDATA (the "Yes" answer) removes it.
     Uninstall 'uninstall'

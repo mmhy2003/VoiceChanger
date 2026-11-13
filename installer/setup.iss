@@ -69,6 +69,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 [Run]
 Filename: "https://vb-audio.com/Cable/"; Description: "Open the VB-CABLE download page"; Flags: shellexec postinstall nowait skipifsilent; Check: NoVirtualCable
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
 [Code]
 const
@@ -152,15 +153,27 @@ begin
     Log('VoiceChanger: virtual cable found');
 end;
 
-{ /PURGEDATA on the uninstaller command line: delete user data without asking. }
-function PurgeDataRequested: Boolean;
+{ True when Name (e.g. '/RELAUNCH') is on the command line, in any case. }
+function ParamGiven(Name: String): Boolean;
 var
   I: Integer;
 begin
   Result := False;
   for I := 1 to ParamCount do
-    if CompareText(ParamStr(I), '/PURGEDATA') = 0 then
+    if CompareText(ParamStr(I), Name) = 0 then
       Result := True;
+end;
+
+{ /RELAUNCH: the in-app updater asks setup to start VoiceChanger again, also in silent mode. }
+function RelaunchRequested: Boolean;
+begin
+  Result := ParamGiven('/RELAUNCH');
+end;
+
+{ /PURGEDATA on the uninstaller command line: delete user data without asking. }
+function PurgeDataRequested: Boolean;
+begin
+  Result := ParamGiven('/PURGEDATA');
 end;
 
 { Setup never touches user data. The uninstaller asks (default No); a silent uninstall keeps it

@@ -33,12 +33,23 @@ through GitHub Releases.
 - `cargo test --workspace`
 - `cargo fmt --all -- --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
-- Installer: `ISCC /DAppVersion=X.Y.Z installer\setup.iss`
+- Installer (after the release build): `cargo xtask fetch-models`, then
+  `pwsh -File installer\build.ps1 -Version X.Y.Z -FileVersion X.Y.Z.0`
+  (needs Inno Setup 6.3+ and cargo-about)
 
 ## CI/CD
 - `.github/workflows/ci.yml`: runs on pushes and PRs to `develop` and `main`.
+  It builds the installer on every run and uploads it as
+  `VoiceChanger-X.Y.Z-dev.<run>` on pushes to `develop` (kept 14 days).
 - `.github/workflows/release.yml`: runs on pushes to `main`; builds, signs,
   tags `vX.Y.Z` and publishes the GitHub Release.
+- `.github/scripts/version.sh` is the one reader of the version and the
+  changelog sections; `.github/scripts/test-version.sh` tests it.
+- Release signing runs only when the secret `SIGNPATH_API_TOKEN` exists,
+  with the repo variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`
+  and `SIGNPATH_POLICY_SLUG`. One artifact configuration signs the `.exe`
+  inside the uploaded zip.
+- `base-models-*` releases host base models; they are never app releases.
 - Run fmt, clippy and tests locally before pushing; CI fails on warnings.
 
 ## Versioning: X.Y.Z

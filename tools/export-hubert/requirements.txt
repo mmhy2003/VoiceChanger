@@ -1,0 +1,8 @@
+# Dev-only: exports hubert.onnx from RVC's MIT hubert_base.pt. Never needed at runtime or in CI.
+# Install into a throwaway venv outside the repo (see README.md):
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1+cpu
+torchaudio==2.4.1+cpu
+onnx==1.16.2
+onnxruntime==1.19.2
+numpy==1.26.4

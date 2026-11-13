@@ -5,12 +5,14 @@ on:
     branches: [develop, main]
   pull_request:
     branches: [develop, main]
+  workflow_call: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow is the caller's name under workflow_call, so release.yml never cancels CI on main.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -21,6 +23,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Script tests
+        shell: bash
+        run: bash .github/scripts/test-version.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -42,11 +47,30 @@ jobs:
         run: cargo test --workspace
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny,cargo-about
       - name: Licences and advisories
         run: cargo deny check
       - name: Release build
         run: cargo build --release
+      - name: Installer version
+        id: installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(bash .github/scripts/version.sh read)
+          echo "display=$version-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "file=$version.0" >> "$GITHUB_OUTPUT"
+      - name: Installer (smoke build)
+        shell: pwsh
+        run: ./installer/build.ps1 -Version '${{ steps.installer.outputs.display }}' -FileVersion '${{ steps.installer.outputs.file }}'
+      - name: Upload develop installer
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceChanger-${{ steps.installer.outputs.display }}
+          path: dist/Setup-VoiceChanger-${{ steps.installer.outputs.display }}.exe
+          retention-days: 14
+          if-no-files-found: error
 
   fuzz:
     runs-on: ubuntu-latest
@@ -90,12 +114,7 @@ jobs:
               ;;
           esac
 
-          version=$(awk '
-            /^\[workspace\.package\]/ { in_pkg = 1; next }
-            /^\[/ { in_pkg = 0 }
-            in_pkg && /^version[[:space:]]*=/ {
-              sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit
-            }' Cargo.toml)
+          version=$(bash .github/scripts/version.sh read)
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error file=Cargo.toml::[workspace.package] version '$version' is not plain X.Y.Z."
             exit 1
@@ -112,10 +131,6 @@ jobs:
             echo "No vX.Y.Z tags yet; skipping the tag comparison."
           fi
 
-          escaped=${version//./\\.}
-          if ! grep -qE "^## \[$escaped\]" CHANGELOG.md; then
-            echo "::error file=CHANGELOG.md::CHANGELOG.md has no '## [$version]' section."
-            exit 1
-          fi
+          bash .github/scripts/version.sh changelog "$version" > /dev/null || { echo "::error file=CHANGELOG.md::CHANGELOG.md has no non-empty '## [$version]' section."; exit 1; }
 
           echo "Release guard passed for $version (from $HEAD_REF)."

@@ -1,0 +1,8 @@
+[package]
+name = "x"
+version = "9.9.9"
+
+[workspace.package]
+edition = "2024"
+version = "1.2.3"
+license = "MIT"

@@ -1,2 +1,4 @@
 # prost-build writes LF; keep the committed copy byte-identical so `cargo xtask gen-onnx` reproduces it.
 crates/convert/src/onnx/onnx.rs text eol=lf
+*.sh text eol=lf
+.github/scripts/fixtures/* text eol=lf

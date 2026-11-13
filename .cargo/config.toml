@@ -1,2 +1,6 @@
 [alias]
 xtask = "run -p xtask --"
+
+# Static C runtime: the installer ships no VC++ redistributable. Applies to every build so CI tests what ships.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

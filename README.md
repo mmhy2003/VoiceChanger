@@ -12,6 +12,16 @@ Pre-alpha. Milestones M0 to M3 are done and M4 (model library, saved settings an
 - Rust stable (the version is pinned by `rust-toolchain.toml`; install with [rustup](https://rustup.rs))
 - A virtual audio cable (e.g. VB-Audio Virtual Cable) to use the app once it exists
 
+## Install
+
+1. Download `Setup-VoiceChanger-X.Y.Z.exe` from [GitHub Releases](https://github.com/mmhy2003/VoiceChanger/releases).
+2. Run it. It installs for the current user without admin rights; installing for all users is optional in the setup dialog.
+3. Install [VB-CABLE](https://vb-audio.com/Cable/). When no virtual cable is found, the last setup page offers to open its download page.
+
+Releases may be unsigned for now, so Windows SmartScreen may warn. Choose **More info** → **Run anyway**, after checking the installer against `SHA256SUMS.txt` from the same release.
+
+The installer uses DirectML only. CUDA needs a CUDA build of `onnxruntime.dll` in place of the DirectML one.
+
 ## Building
 
     cargo build --release
@@ -26,9 +36,9 @@ The binary is `target\release\voicechanger.exe`.
 
     cargo xtask fetch-models
 
-This downloads ContentVec, RMVPE and the DirectML ONNX Runtime DLLs (about 950 MB on disk) into `vendor/` and checks every file against the SHA-256 pinned in `assets/base-models.toml`. Run it before `cargo test`. Files that are already present and match are skipped.
+This downloads HuBERT base, RMVPE and the DirectML ONNX Runtime DLLs (about 950 MB on disk) into `vendor/` and checks every file against the SHA-256 pinned in `assets/base-models.toml`. Run it before `cargo test`. Files that are already present and match are skipped.
 
-ContentVec is GPL-3.0 and is never committed. Set `VC_ASSETS_DIR` to use another location than `vendor/`.
+HuBERT base and RMVPE are MIT (lj1995/VoiceConversionWebUI) and are never committed; [`tools/export-hubert/`](tools/export-hubert/README.md) documents how `hubert.onnx` was made. Set `VC_ASSETS_DIR` to use another location than `vendor/`.
 
 ## Offline conversion
 
@@ -78,6 +88,16 @@ To test the converter against a set of public RVC v2 models (pinned in `assets/t
     cargo test -p vc-convert --release --test corpus -- --ignored --nocapture
 
 The ONNX types in `crates/convert/src/onnx/onnx.rs` are generated; regenerate them with `cargo xtask gen-onnx`.
+
+## Releasing
+
+Releases are made by a release PR from `develop` into `main` (see [AGENTS.md](AGENTS.md)). When it is merged, `.github/workflows/release.yml` tags `vX.Y.Z` and publishes the GitHub Release with the installer and `SHA256SUMS.txt`.
+
+To build the installer locally (needs Inno Setup 6.3+ and cargo-about):
+
+    cargo build --release
+    cargo xtask fetch-models
+    pwsh -File installer\build.ps1 -Version X.Y.Z -FileVersion X.Y.Z.0
 
 ## Contributing
 

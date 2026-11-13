@@ -66,6 +66,37 @@ pub fn push_output(prod: &mut HeapProd<f32>, samples: &[f32], max_backlog: usize
     }
 }
 
+/// Worker-side push of one processed block. On the first non-empty push (`*primed == false`)
+/// pushes `prime` zeros first and sets `primed`, so the output callback has a cushion. The block
+/// is then pushed with a backlog limit of `samples.len() + slack`.
+pub fn push_block(
+    prod: &mut HeapProd<f32>,
+    samples: &[f32],
+    primed: &mut bool,
+    prime: usize,
+    slack: usize,
+    shared: &Shared,
+) {
+    if samples.is_empty() {
+        return;
+    }
+    if !*primed {
+        prod.push_iter(std::iter::repeat_n(0.0, prime));
+        *primed = true;
+    }
+    push_output(prod, samples, samples.len() + slack, shared);
+}
+
+/// Output callback helper: stores (playback − callback) in µs in `shared.device_latency_us`.
+/// Leaves it unchanged when playback is earlier than the callback.
+pub fn store_device_latency(ts: &cpal::OutputStreamTimestamp, shared: &Shared) {
+    if let Some(d) = ts.playback.duration_since(&ts.callback) {
+        shared
+            .device_latency_us
+            .store(d.as_micros().min(u128::from(u64::MAX)) as u64, Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +178,65 @@ mod tests {
         push_output(&mut prod, &[0.4, 0.5, 0.6], 4, &shared);
         assert_eq!(shared.overflows.load(Relaxed), 3);
         assert_eq!(cons.occupied_len(), 3);
+    }
+
+    #[test]
+    fn push_block_primes_once() {
+        let shared = Shared::new();
+        let (mut prod, mut cons) = ring(48_000);
+        let mut primed = false;
+        push_block(&mut prod, &[0.5; 10], &mut primed, 1920, 6720, &shared);
+        assert!(primed);
+        let got = pop_all(&mut cons);
+        assert_eq!(got.len(), 1930);
+        assert!(got[..1920].iter().all(|&s| s == 0.0));
+        assert_eq!(got[1920..], [0.5; 10]);
+
+        push_block(&mut prod, &[0.25; 10], &mut primed, 1920, 6720, &shared);
+        assert_eq!(pop_all(&mut cons), [0.25; 10]);
+        assert_eq!(shared.overflows.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn push_block_empty_does_not_prime() {
+        let shared = Shared::new();
+        let (mut prod, cons) = ring(48_000);
+        let mut primed = false;
+        push_block(&mut prod, &[], &mut primed, 1920, 6720, &shared);
+        assert!(!primed);
+        assert_eq!(cons.occupied_len(), 0);
+    }
+
+    #[test]
+    fn push_block_allows_full_block() {
+        let shared = Shared::new();
+        let (mut prod, mut cons) = ring(2 * 48_000);
+        let mut primed = true;
+        let block = vec![0.1; 12_000];
+        push_block(&mut prod, &block, &mut primed, 1920, 6720, &shared);
+        assert_eq!(cons.occupied_len(), 12_000);
+        assert_eq!(shared.overflows.load(Relaxed), 0);
+
+        cons.skip(12_000 - 9600);
+        push_block(&mut prod, &block, &mut primed, 1920, 6720, &shared);
+        assert_eq!(cons.occupied_len(), 9600);
+        assert_eq!(shared.overflows.load(Relaxed), 12_000);
+    }
+
+    fn timestamp(callback_ns: u32, playback_ns: u32) -> cpal::OutputStreamTimestamp {
+        cpal::OutputStreamTimestamp {
+            callback: cpal::StreamInstant::new(1, callback_ns),
+            playback: cpal::StreamInstant::new(1, playback_ns),
+        }
+    }
+
+    #[test]
+    fn device_latency_from_timestamps() {
+        let shared = Shared::new();
+        store_device_latency(&timestamp(0, 25_000_000), &shared);
+        assert_eq!(shared.device_latency_us.load(Relaxed), 25_000);
+
+        store_device_latency(&timestamp(25_000_000, 0), &shared);
+        assert_eq!(shared.device_latency_us.load(Relaxed), 25_000);
     }
 }

@@ -151,7 +151,11 @@ where
     let shared_err = shared.clone();
     dev.build_output_stream(
         cfg,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            // Only the cable's device latency is part of the end-to-end latency.
+            if which == Endpoint::Cable {
+                ring::store_device_latency(&info.timestamp(), &shared);
+            }
             ring::fill_output(data, channels, &mut cons, &shared)
         },
         move |err| shared_err.report(status_for(which, &err)),
@@ -238,12 +242,10 @@ impl AudioSession {
         let (in_prod, in_cons) = ring::ring(input.rate as usize * input.channels);
         let mut out_prods = Vec::with_capacity(outputs.len());
         let mut out_conses = Vec::with_capacity(outputs.len());
-        let mut max_backlogs = Vec::with_capacity(outputs.len());
         for (_, _, o) in &outputs {
-            let (prod, cons) = ring::ring(o.rate as usize);
+            let (prod, cons) = ring::ring(2 * o.rate as usize);
             out_prods.push(prod);
             out_conses.push(cons);
-            max_backlogs.push(o.rate as usize / 5);
         }
 
         let proc_rate = processor.out_rate();
@@ -277,15 +279,8 @@ impl AudioSession {
         };
 
         let stop = Arc::new(AtomicBool::new(false));
-        let worker = worker::spawn(
-            state,
-            in_cons,
-            out_prods,
-            max_backlogs,
-            shared.clone(),
-            stop.clone(),
-        )
-        .map_err(|e| (build_error("processing thread", e), None))?;
+        let worker = worker::spawn(state, in_cons, out_prods, shared.clone(), stop.clone())
+            .map_err(|e| (build_error("processing thread", e), None))?;
 
         let info = SessionInfo {
             input_rate: input.rate,

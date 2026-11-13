@@ -14,7 +14,7 @@ use rubato::{FftFixedIn, Resampler};
 
 use crate::meter::measure;
 use crate::processor::Processor;
-use crate::ring::push_output;
+use crate::ring::push_block;
 use crate::shared::{Shared, StreamStatus};
 
 /// Average the channels of an interleaved buffer into `out` (cleared first). channels >= 1.
@@ -65,8 +65,47 @@ pub struct WorkerConfig {
     pub outputs: Vec<OutputConfig>,
 }
 
+/// Zeros pushed into each output ring before its first block, so the callback has a cushion.
+pub const PRIME_MS: u32 = 40;
+/// Backlog allowed on top of the block being pushed (and the prime) before a block is dropped.
+pub const SLACK_MS: u32 = 100;
+
+/// The terms of the end-to-end latency (see `end_to_end`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LatencyParts {
+    /// Input frames still queued in the input ring.
+    pub input_backlog: usize,
+    /// Input device rate.
+    pub in_rate: u32,
+    /// Algorithmic delay: the processor's plus the cable resampler's.
+    pub delay: Duration,
+    /// Time of the last `Processor::process` call.
+    pub inference: Duration,
+    /// Samples queued in the cable ring after the push.
+    pub cable_backlog: usize,
+    /// Cable device rate.
+    pub cable_rate: u32,
+    /// Cable device latency (playback minus callback time).
+    pub device: Duration,
+}
+
+fn frames_to_duration(frames: usize, rate: u32) -> Duration {
+    Duration::from_nanos(frames as u64 * 1_000_000_000 / u64::from(rate.max(1)))
+}
+
+/// input_backlog/in_rate + delay + inference + cable_backlog/cable_rate + device.
+pub fn end_to_end(p: &LatencyParts) -> Duration {
+    frames_to_duration(p.input_backlog, p.in_rate)
+        + p.delay
+        + p.inference
+        + frames_to_duration(p.cable_backlog, p.cable_rate)
+        + p.device
+}
+
 struct OutputPath {
     kind: OutputKind,
+    rate: u32,
+    primed: bool,                       // the ring got its PRIME_MS of zeros
     resampler: Option<FftFixedIn<f32>>, // None when rate == proc_rate
     pending: Vec<f32>,                  // processed samples waiting for a full resampler chunk
     chunk_out: Vec<Vec<f32>>,           // [1][output_frames_max()]
@@ -112,6 +151,8 @@ impl State {
                     .map_or_else(Vec::new, |r| r.output_buffer_allocate(true));
                 Ok(OutputPath {
                     kind: out.kind,
+                    rate: out.rate,
+                    primed: false,
                     resampler,
                     pending: Vec::with_capacity(2 * proc_rate),
                     chunk_out,
@@ -169,6 +210,20 @@ impl State {
     pub fn outputs(&self) -> usize {
         self.paths.len()
     }
+
+    /// Index of the cable output, if there is one.
+    pub fn cable_index(&self) -> Option<usize> {
+        self.paths.iter().position(|p| p.kind == OutputKind::Cable)
+    }
+
+    /// Algorithmic delay of output `index`: the processor's delay plus its resampler's.
+    pub fn path_delay(&self, index: usize) -> Duration {
+        let path = &self.paths[index];
+        let resampler = path.resampler.as_ref().map_or(Duration::ZERO, |r| {
+            frames_to_duration(r.output_delay(), path.rate)
+        });
+        self.processor.delay() + resampler
+    }
 }
 
 /// Processes one interleaved input block: downmix, input gain and meter, the processor (skipped
@@ -225,14 +280,15 @@ pub fn process_block(state: &mut State, interleaved: &[f32], shared: &Shared) {
     }
 }
 
-/// Spawns thread "vc-audio-worker". `outputs[i]` feeds `state.output(i)`; `max_backlogs[i]` is
-/// that output's backlog limit in samples. Prepares the processor, skips the input queued
-/// meanwhile, then runs until `stop` is true and returns the processor.
+/// Spawns thread "vc-audio-worker". `outputs[i]` feeds `state.output(i)`. Each ring is primed
+/// with `PRIME_MS` of zeros before its first block, and a block is dropped when it would take the
+/// backlog past the block plus `PRIME_MS + SLACK_MS`. After each block that reached the cable,
+/// stores the end-to-end latency in `shared.latency_us`. Prepares the processor, skips the input
+/// queued meanwhile, then runs until `stop` is true and returns the processor.
 pub fn spawn(
     mut state: State,
     mut input: HeapCons<f32>,
     mut outputs: Vec<HeapProd<f32>>,
-    max_backlogs: Vec<usize>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<Box<dyn Processor>>> {
@@ -242,6 +298,7 @@ pub fn spawn(
             state.prepare(&shared);
             input.skip(input.occupied_len());
             let ch = state.in_channels;
+            let cable = state.cable_index();
             let mut scratch = vec![0.0f32; ch * (state.in_rate / 50).max(1)];
             while !stop.load(Relaxed) {
                 let take = input.occupied_len().min(scratch.len()) / ch * ch;
@@ -251,8 +308,25 @@ pub fn spawn(
                 }
                 input.pop_slice(&mut scratch[..take]);
                 process_block(&mut state, &scratch[..take], &shared);
-                for (i, (out, &max_backlog)) in outputs.iter_mut().zip(&max_backlogs).enumerate() {
-                    push_output(out, state.output(i), max_backlog, &shared);
+                for (out, path) in outputs.iter_mut().zip(&mut state.paths) {
+                    let rate = path.rate as usize;
+                    let prime = rate * PRIME_MS as usize / 1000;
+                    let slack = rate * (PRIME_MS + SLACK_MS) as usize / 1000;
+                    push_block(out, &path.ready, &mut path.primed, prime, slack, &shared);
+                }
+                if let Some(i) = cable
+                    && !state.output(i).is_empty()
+                {
+                    let latency = end_to_end(&LatencyParts {
+                        input_backlog: input.occupied_len() / ch,
+                        in_rate: state.in_rate as u32,
+                        delay: state.path_delay(i),
+                        inference: state.last_process(),
+                        cable_backlog: outputs[i].occupied_len(),
+                        cable_rate: state.paths[i].rate,
+                        device: Duration::from_micros(shared.device_latency_us.load(Relaxed)),
+                    });
+                    shared.latency_us.store(latency.as_micros() as u64, Relaxed);
                 }
             }
             state.into_processor()
@@ -457,21 +531,15 @@ mod tests {
 
         let shared = Arc::new(Shared::new());
         let stop = Arc::new(AtomicBool::new(false));
-        let handle = spawn(
-            state,
-            in_cons,
-            vec![out_prod],
-            vec![48_000 / 5],
-            shared,
-            stop.clone(),
-        )
-        .unwrap();
+        let handle = spawn(state, in_cons, vec![out_prod], shared, stop.clone()).unwrap();
 
         // The backlog queued before `prepare` is skipped: feed markers until one comes out,
         // so the input that follows is processed in full.
+        // The first push is preceded by PRIME_MS of zeros.
+        let prime = (48_000 * PRIME_MS / 1000) as usize;
         let mut got = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(1);
-        while got.is_empty() && Instant::now() < deadline {
+        while got.len() <= prime && Instant::now() < deadline {
             in_prod.push_slice(&[MARKER; 480]);
             std::thread::sleep(Duration::from_millis(5));
             got.extend(out_cons.pop_iter());
@@ -479,7 +547,7 @@ mod tests {
         assert_eq!(in_prod.push_slice(&input), input.len());
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        while got.iter().filter(|&&s| s != MARKER).count() < input.len()
+        while got[prime..].iter().filter(|&&s| s != MARKER).count() < input.len()
             && Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(5));
@@ -488,8 +556,46 @@ mod tests {
         stop.store(true, Relaxed);
         handle.join().unwrap();
 
-        let got: Vec<f32> = got.into_iter().skip_while(|&s| s == MARKER).collect();
+        assert!(got[..prime].iter().all(|&s| s == 0.0));
+        let got: Vec<f32> = got
+            .into_iter()
+            .skip(prime)
+            .skip_while(|&s| s == MARKER)
+            .collect();
         assert_eq!(got, input);
+    }
+
+    #[test]
+    fn end_to_end_sums_parts() {
+        let parts = LatencyParts {
+            input_backlog: 4800,
+            in_rate: 48_000,
+            delay: Duration::from_millis(310),
+            inference: Duration::from_millis(120),
+            cable_backlog: 2400,
+            cable_rate: 48_000,
+            device: Duration::from_millis(20),
+        };
+        assert_eq!(end_to_end(&parts), Duration::from_millis(600));
+    }
+
+    #[test]
+    fn worker_sets_latency() {
+        let state = passthrough(&cfg(48_000, 1, &[(OutputKind::Cable, 48_000)]));
+        let (mut in_prod, in_cons) = ring(48_000);
+        let (out_prod, out_cons) = ring(2 * 48_000);
+        let shared = Arc::new(Shared::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = spawn(state, in_cons, vec![out_prod], shared.clone(), stop.clone()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while out_cons.occupied_len() == 0 && Instant::now() < deadline {
+            in_prod.push_slice(&[0.1; 480]);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop.store(true, Relaxed);
+        handle.join().unwrap();
+        assert!(out_cons.occupied_len() > 0);
+        assert!(shared.latency_us.load(Relaxed) > 0);
     }
 
     #[test]
@@ -567,15 +673,7 @@ mod tests {
         let (out_prod, out_cons) = ring(48_000);
         let shared = Arc::new(Shared::new());
         let stop = Arc::new(AtomicBool::new(false));
-        let handle = spawn(
-            state,
-            in_cons,
-            vec![out_prod],
-            vec![48_000 / 5],
-            shared,
-            stop.clone(),
-        )
-        .unwrap();
+        let handle = spawn(state, in_cons, vec![out_prod], shared, stop.clone()).unwrap();
         // Pushed after spawn: anything queued before `prepare` finishes is skipped.
         let deadline = Instant::now() + Duration::from_secs(1);
         while out_cons.occupied_len() == 0 && Instant::now() < deadline {

@@ -118,11 +118,13 @@ impl<C: Convert> Streamer<C> {
         Ok(())
     }
 
-    /// Algorithmic delay: block + crossfade + search + input resampler delay. Valid after `prepare`.
+    /// Algorithmic delay: crossfade + search + input resampler delay. Valid after `prepare`.
+    /// Output sample j of the stream holds input from this long before it. The wait for a whole
+    /// block is not included: it shows up as the output's backlog once the block is appended.
     pub fn delay(&self) -> Duration {
         let s = &self.settings;
         let resampler = self.resampler.as_ref().map_or(0, |r| r.output_delay());
-        duration_16k(s.block_16k() + s.crossfade_16k() + s.search_16k() + resampler)
+        duration_16k(s.crossfade_16k() + s.search_16k() + resampler)
     }
 
     /// Appends converted samples (one block, or none) for `input` (mono, at the `prepare` rate) to `out`.
@@ -242,17 +244,35 @@ mod tests {
     }
 
     #[test]
-    fn delay_at_16k_is_block_crossfade_search() {
+    fn delay_at_16k_is_crossfade_search() {
         let (mut s, _, _) = streamer();
         s.prepare(16_000).unwrap();
-        assert_eq!(s.delay(), Duration::from_millis(310));
+        assert_eq!(s.delay(), Duration::from_millis(60));
     }
 
     #[test]
     fn delay_includes_input_resampler() {
         let (mut s, _, _) = streamer();
         s.prepare(48_000).unwrap();
-        assert!(s.delay() > Duration::from_millis(310), "{:?}", s.delay());
+        assert!(s.delay() > Duration::from_millis(60), "{:?}", s.delay());
+    }
+
+    #[test]
+    fn delay_aligns_output_to_input() {
+        let (mut s, _, _) = streamer();
+        s.prepare(16_000).unwrap();
+        let block = s.settings().block_16k();
+        let ramp: Vec<f32> = (1..=block).map(|i| i as f32).collect();
+        let mut out = Vec::new();
+        s.process(&ramp, &mut out).unwrap();
+        let skip = (s.delay().as_secs_f64() * 16_000.0).round() as usize;
+        let crossfade = s.settings().crossfade_16k();
+        // Output sample j (40 kHz) is input sample j·2/5 − skip; past the fade-in from silence.
+        for j in (crossfade * 5 / 2..out.len()).step_by(5) {
+            let i = (j * 2 / 5).checked_sub(skip);
+            let expected = i.map_or(0.0, |i| ramp[i]);
+            assert_eq!(out[j], expected, "output sample {j}");
+        }
     }
 
     #[test]

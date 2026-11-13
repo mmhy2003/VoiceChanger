@@ -149,6 +149,8 @@ where
 {
     let channels = usize::from(cfg.channels);
     let shared_err = shared.clone();
+    // Set by the first sample popped: the wait for the worker's first block is not an underrun.
+    let mut started = false;
     dev.build_output_stream(
         cfg,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
@@ -156,7 +158,7 @@ where
             if which == Endpoint::Cable {
                 ring::store_device_latency(&info.timestamp(), &shared);
             }
-            ring::fill_output(data, channels, &mut cons, &shared)
+            ring::fill_output(data, channels, &mut cons, &mut started, &shared)
         },
         move |err| shared_err.report(status_for(which, &err)),
         None,

@@ -112,7 +112,7 @@ mod tests {
         let (mut p, error) = processor(usize::MAX);
         p.prepare(16_000).unwrap();
         assert_eq!(p.out_rate(), 40_000);
-        assert_eq!(p.delay(), Duration::from_millis(310));
+        assert_eq!(p.delay(), Duration::from_millis(60));
         let mut out = Vec::new();
         p.process(&block(), &mut out).unwrap();
         assert_eq!(out.len(), 10_000);

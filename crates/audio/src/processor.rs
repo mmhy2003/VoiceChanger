@@ -9,7 +9,8 @@ pub trait Processor: Any + Send {
     /// Sample rate of the samples `process` appends.
     fn out_rate(&self) -> u32;
 
-    /// Algorithmic delay (block + crossfade + search + resampler delays). Valid after `prepare`.
+    /// Algorithmic delay of an output sample behind its input, not counting the wait for a whole
+    /// block (that is in the output backlog once the block is pushed). Valid after `prepare`.
     fn delay(&self) -> Duration;
 
     /// Called once on the worker thread before the first `process`, with the input device rate.

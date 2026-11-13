@@ -33,17 +33,29 @@ where
 }
 
 /// Output callback body. For each frame of `data` pops one mono sample (0.0 when the ring is
-/// empty, counted as an underrun) and writes it to every channel.
-pub fn fill_output<T>(data: &mut [T], channels: usize, cons: &mut HeapCons<f32>, shared: &Shared)
-where
+/// empty) and writes it to every channel. An empty ring counts as an underrun only once a sample
+/// has been popped (`*started`), so the wait for the first block is not counted.
+pub fn fill_output<T>(
+    data: &mut [T],
+    channels: usize,
+    cons: &mut HeapCons<f32>,
+    started: &mut bool,
+    shared: &Shared,
+) where
     T: Sample + FromSample<f32>,
 {
     let mut underruns = 0u64;
     for frame in data.chunks_mut(channels.max(1)) {
-        let v = cons.try_pop().unwrap_or_else(|| {
-            underruns += 1;
-            0.0
-        });
+        let v = match cons.try_pop() {
+            Some(v) => {
+                *started = true;
+                v
+            }
+            None => {
+                underruns += u64::from(*started);
+                0.0
+            }
+        };
         frame.fill(T::from_sample(v));
     }
     if underruns > 0 {
@@ -139,12 +151,33 @@ mod tests {
     }
 
     #[test]
+    fn fill_output_no_underruns_before_first_sample() {
+        let shared = Shared::new();
+        let (mut prod, mut cons) = ring(8);
+        let mut started = false;
+        let mut out = [9.0f32; 4];
+        fill_output(&mut out, 2, &mut cons, &mut started, &shared);
+        assert_eq!(out, [0.0; 4]);
+        assert!(!started);
+        assert_eq!(shared.underruns.load(Relaxed), 0);
+
+        prod.push_slice(&[0.5]);
+        fill_output(&mut out, 2, &mut cons, &mut started, &shared);
+        assert_eq!(out, [0.5, 0.5, 0.0, 0.0]);
+        assert!(started);
+        assert_eq!(shared.underruns.load(Relaxed), 1);
+
+        fill_output(&mut out, 2, &mut cons, &mut started, &shared);
+        assert_eq!(shared.underruns.load(Relaxed), 3);
+    }
+
+    #[test]
     fn fill_output_duplicates_to_channels() {
         let shared = Shared::new();
         let (mut prod, mut cons) = ring(8);
         prod.push_slice(&[0.5, -0.5]);
         let mut out = [9.0f32; 4];
-        fill_output(&mut out, 2, &mut cons, &shared);
+        fill_output(&mut out, 2, &mut cons, &mut false, &shared);
         assert_eq!(out, [0.5, 0.5, -0.5, -0.5]);
         assert_eq!(shared.underruns.load(Relaxed), 0);
     }
@@ -155,7 +188,7 @@ mod tests {
         let (mut prod, mut cons) = ring(8);
         prod.push_slice(&[0.25]);
         let mut out = [9.0f32; 6];
-        fill_output(&mut out, 2, &mut cons, &shared);
+        fill_output(&mut out, 2, &mut cons, &mut false, &shared);
         assert_eq!(out, [0.25, 0.25, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(shared.underruns.load(Relaxed), 2);
     }
@@ -166,7 +199,7 @@ mod tests {
         let (mut prod, mut cons) = ring(8);
         prod.push_slice(&[1.0]);
         let mut out = [0i16; 1];
-        fill_output(&mut out, 1, &mut cons, &shared);
+        fill_output(&mut out, 1, &mut cons, &mut false, &shared);
         assert_eq!(out, [i16::MAX]);
     }
 

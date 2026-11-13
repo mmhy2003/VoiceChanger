@@ -573,13 +573,13 @@ mod tests {
         let parts = LatencyParts {
             input_backlog: 4800,
             in_rate: 48_000,
-            delay: Duration::from_millis(310),
+            delay: Duration::from_millis(60),
             inference: Duration::from_millis(120),
             cable_backlog: 2400,
             cable_rate: 48_000,
             device: Duration::from_millis(20),
         };
-        assert_eq!(end_to_end(&parts), Duration::from_millis(600));
+        assert_eq!(end_to_end(&parts), Duration::from_millis(350));
     }
 
     #[test]

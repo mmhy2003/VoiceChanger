@@ -92,8 +92,9 @@ Run `cargo test -p vc-engine sola`, then the gate. Commit: `feat(engine): add SO
 Create `crates/engine/src/stream/streamer.rs` (re-export `Convert` and `Streamer` from `stream` and the crate root). It implements `Convert for Pipeline` (delegating to `Pipeline::sample_rate` and `Pipeline::convert_past`). Contract and algorithm: **Appendix C**.
 Tests first, with `FakeConvert { rate: 40000, calls: Vec<(usize, usize, Params)> }`. Its `convert_past` returns `(w.len()-ctx)*5/2` samples with `out[i] = w[ctx + i*2/5]`.
 - `output_length_and_rate`: prepare(16000), 1 s of a sine in 320-sample chunks → `out.len() == 4 * 10000`, `sample_rate() == 40000`, every fake call has `window == window_16k()` and `ctx == context_16k()`.
-- `delay_at_16k_is_block_crossfade_search`: `delay() == 310 ms` (defaults).
-- `delay_includes_input_resampler`: prepare(48000) → `delay() > 310 ms`.
+- `delay_at_16k_is_crossfade_search`: `delay() == 60 ms` (defaults).
+- `delay_includes_input_resampler`: prepare(48000) → `delay() > 60 ms`.
+- `delay_aligns_output_to_input`: after one ramp block from silence, output sample j holds input j·2/5 − delay·16000 (past the fade-in).
 - `drops_late_block`: one `process` with `2*block` samples → `out.len() == 10000`, `stats.late_blocks() == 1`, `stats.blocks() == 1`.
 - `reads_controls_per_block`: `controls.set_pitch(5.0); set_gate_db(-40.0)` before the block → the fake saw pitch 5, gate −40.
 - `prepare_warms_up_and_resets`: after prepare, the fake has 1 call (the warm-up) and `stats.blocks() == 0`.
@@ -309,7 +310,7 @@ Re-export `stream_file` and `StreamReport` from `stream`.
 pub trait Processor: Any + Send {
     /// Sample rate of the samples `process` appends.
     fn out_rate(&self) -> u32;
-    /// Algorithmic delay (block + crossfade + search + resampler delays). Valid after `prepare`.
+    /// Algorithmic delay (crossfade + search + resampler delays; the block is in the cable backlog). Valid after `prepare`.
     fn delay(&self) -> Duration;
     /// Called once on the worker thread before the first `process`, with the input device rate.
     fn prepare(&mut self, in_rate: u32) -> Result<(), String> { let _ = in_rate; Ok(()) }

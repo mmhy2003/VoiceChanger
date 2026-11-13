@@ -19,7 +19,7 @@ mic cb → in ring → worker: downmix → ×input gain → input meter
           → cable ring (+ monitor ring) → output cbs
 ```
 **vc-audio** (`worker.rs`, `session.rs`, `shared.rs`, `ring.rs`)
-- `pub trait Processor: Send { fn out_rate(&self) -> u32; fn delay(&self) -> Duration; fn prepare(&mut self) -> Result<(), String> {Ok(())}; fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), String>; }`. `delay` is the algorithmic delay: block + crossfade + search + resampler delays.
+- `pub trait Processor: Send { fn out_rate(&self) -> u32; fn delay(&self) -> Duration; fn prepare(&mut self) -> Result<(), String> {Ok(())}; fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), String>; }`. `delay` is the algorithmic delay: crossfade + search + resampler delays. The block itself is not included, because the cable ring occupancy after the push already contains it.
 - `WorkerConfig` gets the processor's out rate. The output paths resample from it, not from the input rate.
 - The worker calls `prepare()` (warm-up at the window length) before its loop. It stops calling `process` after an error and reports the new `StreamStatus::ProcessorFailed`; the error text goes to `tracing`.
 - `AudioSession::start(sel, shared, processor: Box<dyn Processor>)`. `AudioSession::stop(self) -> Option<Box<dyn Processor>>` hands the processor back, with its pipeline, when the worker joins. The worker thread returns the processor.

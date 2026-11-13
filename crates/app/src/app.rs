@@ -5,18 +5,20 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use vc_audio::{
-    AudioControl, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Processor, Selection, SessionInfo,
-    Shared, StreamStatus, db_to_gain,
+    AudioControl, DeviceList, DeviceRef, Endpoint, Processor, Selection, SessionInfo, Shared,
+    StreamStatus, db_to_gain,
 };
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
+use crate::config::{Config, DevicesConfig, PerfConfig, Prefs, SaveTracker, SavedDevice};
 use crate::engine::{EngineProcessor, ErrorSlot};
 use crate::model::{self, ModelSlot, provider_label};
+use crate::paths::AppDirs;
 use crate::status_bar::{self, StatusSnapshot};
 use crate::tabs;
 use crate::widgets::MeterState;
@@ -169,15 +171,50 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Default selection for `devices`, default monitor volume, no notes.
-    pub fn new(devices: DeviceList) -> Self {
+    /// The saved choices matched against `devices`. A saved device that is gone falls back to its default
+    /// with a note; a device that was never saved takes its default silently.
+    pub fn from_config(devices: DeviceList, config: &Config) -> Self {
+        let saved = &config.devices;
+        let device = |d: &Option<SavedDevice>| d.clone().map(DeviceRef::from).unwrap_or_default();
+        let mut selection = Selection {
+            input: device(&saved.input),
+            cable: device(&saved.cable),
+            monitor: saved.monitor.clone().map(DeviceRef::from),
+            monitor_enabled: saved.monitor_enabled,
+        };
+        if selection.monitor.is_none() {
+            selection.monitor = Selection::defaults(&devices).monitor;
+        }
+        let notes = selection.reconcile(&devices);
         Self {
-            selection: Selection::defaults(&devices),
             devices,
-            monitor_db: DEFAULT_MONITOR_DB,
-            notes: Vec::new(),
-            perf: PerfSettings::default(),
-            voice: VoiceSettings::default(),
+            selection,
+            monitor_db: saved.monitor_db,
+            notes,
+            perf: config.perf.to_settings(),
+            voice: config.voice,
+        }
+    }
+
+    /// The saved form of this state, with the preferences kept outside it.
+    pub fn to_config(&self, prefs: &Prefs) -> Config {
+        let device = |r: &DeviceRef| (!r.is_empty()).then(|| SavedDevice::from(r));
+        let sel = &self.selection;
+        Config {
+            devices: DevicesConfig {
+                input: device(&sel.input),
+                cable: device(&sel.cable),
+                monitor: sel.monitor.as_ref().and_then(device),
+                monitor_enabled: sel.monitor_enabled,
+                monitor_db: self.monitor_db,
+            },
+            perf: PerfConfig::from_settings(&self.perf),
+            voice: self.voice,
+            last_model: prefs.last_model.clone(),
+            pitch_by_model: prefs.pitch_by_model.clone(),
+            hotkey: prefs.hotkey.clone(),
+            start_minimised: prefs.start_minimised,
+            ..Config::default()
         }
     }
 
@@ -217,19 +254,45 @@ pub struct VcApp {
     pub(crate) restart_requested: bool,
     /// Set once the dead-audio-thread banner has been shown, so dismissing it sticks.
     audio_dead_shown: bool,
+    /// Where the settings, models and logs live.
+    dirs: AppDirs,
+    /// The saved preferences that live outside `state`.
+    prefs: Prefs,
+    /// Writes the settings a moment after they change.
+    save: SaveTracker,
+}
+
+/// What `main` hands the app: its folders, the loaded settings and any notes from loading them.
+pub struct Startup {
+    pub dirs: AppDirs,
+    pub config: Config,
+    pub notes: Vec<String>,
 }
 
 impl VcApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, startup: Startup) -> Self {
+        // egui 0.32's ViewportBuilder cannot open minimised; the command runs after the first frame.
+        if startup.config.start_minimised {
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         let shared = Arc::new(Shared::new());
         let audio = AudioControl::spawn(shared.clone());
+        let state = AppState::from_config(audio.list().unwrap_or_default(), &startup.config);
+        let notes: Vec<&str> = startup
+            .notes
+            .iter()
+            .chain(&state.notes)
+            .map(String::as_str)
+            .collect();
+        let banner = (!notes.is_empty()).then(|| notes.join(" "));
         Self {
             tab: Tab::default(),
-            state: AppState::new(audio.list().unwrap_or_default()),
+            state,
             audio,
             session_info: None,
             shared,
-            banner: None,
+            banner,
             input_meter: MeterState::default(),
             output_meter: MeterState::default(),
             model: ModelSlot::default(),
@@ -240,7 +303,19 @@ impl VcApp {
             processor_error: ErrorSlot::default(),
             restart_requested: false,
             audio_dead_shown: false,
+            dirs: startup.dirs,
+            prefs: Prefs::from_config(&startup.config),
+            save: SaveTracker::new(startup.config),
         }
+    }
+
+    /// Writes the settings; a failure is logged and not retried until they change again.
+    fn write_config(&mut self, cfg: Config) {
+        let path = self.dirs.settings_file();
+        if let Err(e) = cfg.save(&path) {
+            tracing::warn!("cannot save {}: {e}", path.display());
+        }
+        self.save.mark_saved(cfg);
     }
 
     /// Opens the model file picker; its answer is polled in `update`.
@@ -459,9 +534,21 @@ impl eframe::App for VcApp {
         } else if self.model.is_loading() || self.pick_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+
+        let cfg = self.state.to_config(&self.prefs);
+        if self.save.poll(&cfg, Instant::now()) {
+            self.write_config(cfg);
+        }
+        if self.save.is_pending() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let cfg = self.state.to_config(&self.prefs);
+        if self.save.needs_save(&cfg) {
+            self.write_config(cfg);
+        }
         self.stop();
         self.audio.shutdown();
     }
@@ -470,7 +557,7 @@ impl eframe::App for VcApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vc_audio::DeviceRef;
+    use vc_audio::{DEFAULT_MONITOR_DB, DeviceInfo};
 
     #[test]
     fn window_title_has_version() {
@@ -500,7 +587,7 @@ mod tests {
             Some("USB Mic".into()),
             Some("Headphones".into()),
         );
-        let mut state = AppState::new(list.clone());
+        let mut state = AppState::from_config(list.clone(), &Config::default());
         assert_eq!(state.devices, list);
         assert_eq!(state.selection, Selection::defaults(&list));
         assert_eq!(state.monitor_db, DEFAULT_MONITOR_DB);
@@ -613,8 +700,138 @@ mod tests {
         assert_eq!(voice.input_db, 0.0);
         assert_eq!(voice.output_db, 0.0);
         assert_eq!(voice.gate_db, -50.0);
-        let state = AppState::new(DeviceList::from_names(vec![], vec![], None, None));
+        let state = AppState::from_config(
+            DeviceList::from_names(vec![], vec![], None, None),
+            &Config::default(),
+        );
         assert_eq!(state.voice, voice);
+    }
+
+    fn info(id: &str, name: &str) -> DeviceInfo {
+        DeviceInfo {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    fn saved(id: &str, name: &str) -> Option<SavedDevice> {
+        Some(SavedDevice {
+            id: id.into(),
+            name: name.into(),
+        })
+    }
+
+    /// One mic, a cable and headphones, each with its own endpoint ID.
+    fn id_list() -> DeviceList {
+        DeviceList::new(
+            vec![
+                info("{mic}", "USB Mic"),
+                info("{rtk}", "Microphone (Realtek)"),
+            ],
+            vec![
+                info("{hp}", "Headphones"),
+                info("{cable}", "CABLE Input (VB-Audio Virtual Cable)"),
+            ],
+            Some(DeviceRef {
+                id: "{rtk}".into(),
+                name: "Microphone (Realtek)".into(),
+            }),
+            Some(DeviceRef {
+                id: "{hp}".into(),
+                name: "Headphones".into(),
+            }),
+        )
+    }
+
+    fn saved_config() -> Config {
+        Config {
+            devices: DevicesConfig {
+                input: saved("{mic}", "USB Mic"),
+                cable: saved("{cable}", "CABLE Input (VB-Audio Virtual Cable)"),
+                monitor: saved("{hp}", "Headphones"),
+                monitor_enabled: true,
+                monitor_db: -7.5,
+            },
+            perf: PerfConfig {
+                provider: ProviderChoice::Cpu,
+                gpu: 1,
+                block_ms: 300,
+                context_ms: 400,
+                crossfade_ms: 60,
+            },
+            voice: VoiceSettings {
+                pitch: -4,
+                input_db: 3.0,
+                output_db: -2.0,
+                gate_db: -42.0,
+            },
+            last_model: Some("ana".into()),
+            pitch_by_model: [("ana".to_string(), -4)].into(),
+            hotkey: Some("Ctrl+Alt+V".into()),
+            start_minimised: true,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn state_from_config_restores() {
+        let mut config = saved_config();
+        // Same endpoint, renamed since the last launch.
+        config.devices.input = saved("{mic}", "Old Mic Name");
+        let state = AppState::from_config(id_list(), &config);
+        assert!(state.notes.is_empty(), "{:?}", state.notes);
+        assert_eq!(
+            state.selection,
+            Selection {
+                input: DeviceRef {
+                    id: "{mic}".into(),
+                    name: "USB Mic".into(),
+                },
+                cable: DeviceRef {
+                    id: "{cable}".into(),
+                    name: "CABLE Input (VB-Audio Virtual Cable)".into(),
+                },
+                monitor: Some(DeviceRef {
+                    id: "{hp}".into(),
+                    name: "Headphones".into(),
+                }),
+                monitor_enabled: true,
+            }
+        );
+        assert_eq!(state.monitor_db, -7.5);
+        assert_eq!(state.perf, config.perf.to_settings());
+        assert_eq!(state.voice, config.voice);
+        assert_eq!(state.devices, id_list());
+    }
+
+    #[test]
+    fn state_from_config_missing_device_notes() {
+        let mut config = saved_config();
+        config.devices.input = saved("{gone}", "Unplugged Mic");
+        let state = AppState::from_config(id_list(), &config);
+        assert_eq!(
+            state.notes,
+            [
+                "Input \"Unplugged Mic\" is no longer available; switched to \
+                 \"Microphone (Realtek)\"."
+            ]
+        );
+        assert_eq!(state.selection.input.id, "{rtk}");
+        assert_eq!(state.selection.cable.id, "{cable}");
+    }
+
+    #[test]
+    fn state_from_config_without_saved_devices_takes_defaults() {
+        let state = AppState::from_config(id_list(), &Config::default());
+        assert!(state.notes.is_empty(), "{:?}", state.notes);
+        assert_eq!(state.selection, Selection::defaults(&id_list()));
+    }
+
+    #[test]
+    fn to_config_round_trip() {
+        let config = saved_config();
+        let state = AppState::from_config(id_list(), &config);
+        assert_eq!(state.to_config(&Prefs::from_config(&config)), config);
     }
 
     #[test]

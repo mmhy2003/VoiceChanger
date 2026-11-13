@@ -7,11 +7,12 @@ mod manifest;
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask <fetch-models|gen-onnx>";
+const USAGE: &str = "usage: cargo xtask <fetch-models|fetch-test-models|gen-onnx>";
 
 fn main() -> ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("fetch-models") => fetch_models(),
+        Some("fetch-test-models") => fetch_test_models(),
         Some("gen-onnx") => gen_onnx(),
         _ => {
             eprintln!("{USAGE}");
@@ -34,8 +35,17 @@ fn root() -> Result<&'static Path, String> {
 }
 
 fn fetch_models() -> Result<(), String> {
+    fetch_manifest("assets/base-models.toml")
+}
+
+/// Fetches the public RVC models of the local corpus test into `vendor/test-models/`.
+fn fetch_test_models() -> Result<(), String> {
+    fetch_manifest("assets/test-models.toml")
+}
+
+fn fetch_manifest(manifest: &str) -> Result<(), String> {
     let root = root()?;
-    let path = root.join("assets/base-models.toml");
+    let path = root.join(manifest);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let manifest = manifest::parse(&text)?;
     fetch::fetch_all(root, &manifest)

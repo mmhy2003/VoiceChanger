@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,8 @@ pub const INDEX_FILE: &str = "library.toml";
 /// The index format this build writes; newer indexes are not read.
 pub const INDEX_VERSION: u32 = 1;
 const ICONS: &str = "icons";
+/// The default pitch a model can have, in semitones.
+pub const PITCH_RANGE: RangeInclusive<i32> = -24..=24;
 
 /// One model in the library.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +141,97 @@ impl Library {
         })
     }
 
+    /// Renames a model. The name is trimmed and cannot be empty.
+    pub fn rename(&mut self, id: &str, name: &str) -> Result<(), LibraryError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(LibraryError::EmptyName);
+        }
+        self.edit(id, |e| e.name = name.to_string())
+    }
+
+    /// Removes a model from the index, then deletes its file and icon. Files already gone are ignored.
+    pub fn remove(&mut self, id: &str) -> Result<(), LibraryError> {
+        let i = self.position(id)?;
+        let mut entries = self.entries.clone();
+        let entry = entries.remove(i);
+        self.commit(entries)?;
+        remove_if_exists(&self.model_path(&entry))?;
+        if let Some(icon) = self.icon_path(&entry) {
+            remove_if_exists(&icon)?;
+        }
+        Ok(())
+    }
+
+    /// Swaps a model with the one above it; the first model stays where it is.
+    pub fn move_up(&mut self, id: &str) -> Result<(), LibraryError> {
+        let i = self.position(id)?;
+        if i == 0 {
+            return Ok(());
+        }
+        self.swap(i - 1, i)
+    }
+
+    /// Swaps a model with the one below it; the last model stays where it is.
+    pub fn move_down(&mut self, id: &str) -> Result<(), LibraryError> {
+        let i = self.position(id)?;
+        if i + 1 == self.entries.len() {
+            return Ok(());
+        }
+        self.swap(i, i + 1)
+    }
+
+    /// Sets the pitch a model starts with, clamped to [`PITCH_RANGE`].
+    pub fn set_default_pitch(&mut self, id: &str, pitch: i32) -> Result<(), LibraryError> {
+        let pitch = pitch.clamp(*PITCH_RANGE.start(), *PITCH_RANGE.end());
+        self.edit(id, |e| e.default_pitch = pitch)
+    }
+
+    /// Copies a PNG or JPEG image to `icons/<id>.png` or `icons/<id>.jpg` and makes it the model's icon. An older icon with the
+    /// other name is deleted.
+    pub fn set_icon(&mut self, id: &str, src: &Path) -> Result<(), LibraryError> {
+        let ext = src
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        let ext = match ext.as_deref() {
+            Some("png") => "png",
+            Some("jpg" | "jpeg") => "jpg",
+            _ => return Err(LibraryError::IconType),
+        };
+        let i = self.position(id)?;
+        let file = format!("{id}.{ext}");
+        let bytes = fs::read(src)?;
+        write_atomic(&self.root.join(ICONS).join(&file), &bytes)?;
+        let old = self.icon_path(&self.entries[i]);
+        self.edit(id, |e| e.icon = Some(file.clone()))?;
+        if let Some(old) = old.filter(|old| old.file_name() != Some(file.as_ref())) {
+            remove_if_exists(&old)?;
+        }
+        Ok(())
+    }
+
+    /// The index of `id`, or `NotFound`.
+    fn position(&self, id: &str) -> Result<usize, LibraryError> {
+        self.entries
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or_else(|| LibraryError::NotFound(id.to_string()))
+    }
+
+    /// Applies `change` to the entry `id` and saves the index.
+    fn edit(&mut self, id: &str, change: impl FnOnce(&mut ModelEntry)) -> Result<(), LibraryError> {
+        let i = self.position(id)?;
+        let mut entries = self.entries.clone();
+        change(&mut entries[i]);
+        self.commit(entries)
+    }
+
+    fn swap(&mut self, a: usize, b: usize) -> Result<(), LibraryError> {
+        let mut entries = self.entries.clone();
+        entries.swap(a, b);
+        self.commit(entries)
+    }
+
     /// Writes `entries` as the index, then makes them the library's entries.
     fn commit(&mut self, entries: Vec<ModelEntry>) -> Result<(), LibraryError> {
         let index = Index {
@@ -148,6 +242,14 @@ impl Library {
         write_atomic(&self.root.join(INDEX_FILE), text.as_bytes())?;
         self.entries = index.models;
         Ok(())
+    }
+}
+
+/// Deletes `path`; a file that is already gone is fine.
+fn remove_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -431,5 +533,171 @@ mod tests {
         assert_eq!(note, None);
         assert_eq!(lib.entries(), std::slice::from_ref(&entry));
         assert!(!lib.file_exists(&entry));
+    }
+
+    /// A library in `dir/models` with one fake model per name, in that order.
+    fn library_with(dir: &TempDir, names: &[&str]) -> Library {
+        let (mut lib, _) = Library::open(dir.path().join("models"));
+        for name in names {
+            let src = source(dir, &format!("{name}.onnx"), b"model");
+            lib.import(&src, 40_000, true).unwrap();
+        }
+        lib
+    }
+
+    #[test]
+    fn rename_trims_and_rejects_empty() {
+        let dir = TempDir::new("rename");
+        let mut lib = library_with(&dir, &["a"]);
+
+        lib.rename("a", "  Alice v2 \t").unwrap();
+        assert_eq!(lib.get("a").unwrap().name, "Alice v2");
+
+        assert!(matches!(
+            lib.rename("a", "   "),
+            Err(LibraryError::EmptyName)
+        ));
+        assert_eq!(lib.get("a").unwrap().name, "Alice v2");
+        assert!(matches!(
+            lib.rename("zz", "X"),
+            Err(LibraryError::NotFound(id)) if id == "zz"
+        ));
+    }
+
+    #[test]
+    fn remove_deletes_model_and_icon() {
+        let dir = TempDir::new("remove");
+        let mut lib = library_with(&dir, &["a", "b"]);
+        let icon = source(&dir, "face.png", b"png");
+        lib.set_icon("a", &icon).unwrap();
+        let root = lib.root().to_path_buf();
+        assert!(root.join("icons").join("a.png").is_file());
+
+        lib.remove("a").unwrap();
+        assert_eq!(lib.ids(), vec!["b".to_string()]);
+        assert!(!root.join("a.onnx").exists());
+        assert!(!root.join("icons").join("a.png").exists());
+        assert!(root.join("b.onnx").is_file());
+
+        // A model whose file is already gone is still removed.
+        std::fs::remove_file(root.join("b.onnx")).unwrap();
+        lib.remove("b").unwrap();
+        assert!(lib.entries().is_empty());
+    }
+
+    #[test]
+    fn remove_unknown_is_not_found() {
+        let dir = TempDir::new("remove-unknown");
+        let mut lib = library_with(&dir, &["a"]);
+        assert!(matches!(
+            lib.remove("zz"),
+            Err(LibraryError::NotFound(id)) if id == "zz"
+        ));
+        assert_eq!(lib.ids(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn reorder_edges() {
+        let dir = TempDir::new("reorder");
+        let mut lib = library_with(&dir, &["a", "b", "c"]);
+        let order = |lib: &Library| lib.ids().join(",");
+
+        lib.move_up("a").unwrap();
+        assert_eq!(order(&lib), "a,b,c");
+        lib.move_down("c").unwrap();
+        assert_eq!(order(&lib), "a,b,c");
+        lib.move_down("a").unwrap();
+        assert_eq!(order(&lib), "b,a,c");
+        lib.move_up("c").unwrap();
+        assert_eq!(order(&lib), "b,c,a");
+        assert!(matches!(lib.move_up("zz"), Err(LibraryError::NotFound(_))));
+        assert!(matches!(
+            lib.move_down("zz"),
+            Err(LibraryError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn default_pitch_clamped_and_saved() {
+        let dir = TempDir::new("pitch");
+        let mut lib = library_with(&dir, &["a"]);
+
+        lib.set_default_pitch("a", 30).unwrap();
+        assert_eq!(lib.get("a").unwrap().default_pitch, 24);
+        lib.set_default_pitch("a", -30).unwrap();
+        assert_eq!(lib.get("a").unwrap().default_pitch, -24);
+        lib.set_default_pitch("a", 5).unwrap();
+        assert_eq!(lib.get("a").unwrap().default_pitch, 5);
+        assert!(matches!(
+            lib.set_default_pitch("zz", 1),
+            Err(LibraryError::NotFound(_))
+        ));
+
+        let (reopened, _) = Library::open(lib.root().to_path_buf());
+        assert_eq!(reopened.get("a").unwrap().default_pitch, 5);
+    }
+
+    #[test]
+    fn set_icon_copies_and_replaces() {
+        let dir = TempDir::new("icon");
+        let mut lib = library_with(&dir, &["a"]);
+        let icons = lib.root().join("icons");
+
+        lib.set_icon("a", &source(&dir, "face.PNG", b"png bytes"))
+            .unwrap();
+        let entry = lib.get("a").unwrap().clone();
+        assert_eq!(entry.icon.as_deref(), Some("a.png"));
+        assert_eq!(lib.icon_path(&entry), Some(icons.join("a.png")));
+        assert_eq!(std::fs::read(icons.join("a.png")).unwrap(), b"png bytes");
+
+        lib.set_icon("a", &source(&dir, "face.jpeg", b"jpeg bytes"))
+            .unwrap();
+        assert_eq!(lib.get("a").unwrap().icon.as_deref(), Some("a.jpg"));
+        assert_eq!(file_names(&icons), vec!["a.jpg"]);
+        assert_eq!(std::fs::read(icons.join("a.jpg")).unwrap(), b"jpeg bytes");
+
+        // The same name again is overwritten in place, not deleted.
+        lib.set_icon("a", &source(&dir, "other.jpg", b"new jpg"))
+            .unwrap();
+        assert_eq!(file_names(&icons), vec!["a.jpg"]);
+        assert_eq!(std::fs::read(icons.join("a.jpg")).unwrap(), b"new jpg");
+
+        assert!(matches!(
+            lib.set_icon("zz", &source(&dir, "x.png", b"x")),
+            Err(LibraryError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn set_icon_rejects_other_types() {
+        let dir = TempDir::new("icon-type");
+        let mut lib = library_with(&dir, &["a"]);
+
+        for name in ["face.gif", "face.bmp", "face"] {
+            assert!(matches!(
+                lib.set_icon("a", &source(&dir, name, b"x")),
+                Err(LibraryError::IconType)
+            ));
+        }
+        assert_eq!(lib.get("a").unwrap().icon, None);
+        assert!(!lib.root().join("icons").exists());
+    }
+
+    #[test]
+    fn edits_persist_after_reopen() {
+        let dir = TempDir::new("persist");
+        let mut lib = library_with(&dir, &["a", "b"]);
+        lib.rename("b", "Bob").unwrap();
+        lib.move_up("b").unwrap();
+        lib.set_default_pitch("a", -7).unwrap();
+        lib.set_icon("a", &source(&dir, "a.jpg", b"jpg")).unwrap();
+
+        let (reopened, note) = Library::open(lib.root().to_path_buf());
+        assert_eq!(note, None);
+        assert_eq!(reopened.entries(), lib.entries());
+        assert_eq!(reopened.ids(), vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(reopened.get("b").unwrap().name, "Bob");
+        assert_eq!(reopened.get("a").unwrap().default_pitch, -7);
+        assert_eq!(reopened.get("a").unwrap().icon.as_deref(), Some("a.jpg"));
     }
 }

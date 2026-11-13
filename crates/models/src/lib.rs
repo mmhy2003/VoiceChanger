@@ -7,5 +7,6 @@ mod testutil;
 
 pub use fsutil::{back_up_bad, write_atomic};
 pub use library::{
-    INDEX_FILE, Library, LibraryError, ModelEntry, StagedModel, copy_model, discard_staged, slug,
+    INDEX_FILE, Library, LibraryError, ModelEntry, PITCH_RANGE, StagedModel, copy_model,
+    discard_staged, slug,
 };

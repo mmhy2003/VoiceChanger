@@ -204,6 +204,19 @@ mod tests {
     }
 
     #[test]
+    fn repo_base_models_are_mit() {
+        let m = parse(include_str!("../../assets/base-models.toml")).unwrap();
+        for entry in &m.model {
+            assert!(
+                entry.licence.starts_with("MIT"),
+                "{}: installer bundles it, but its licence is {}",
+                entry.name,
+                entry.licence
+            );
+        }
+    }
+
+    #[test]
     fn repo_test_manifest_is_valid() {
         let m = parse(include_str!("../../assets/test-models.toml")).unwrap();
         assert!(m.model.len() >= 20, "only {} models", m.model.len());

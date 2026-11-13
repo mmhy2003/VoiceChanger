@@ -1,13 +1,15 @@
 # Base models and ONNX Runtime binaries fetched by `cargo xtask fetch-models`.
 # Files land in vendor/ (gitignored); a runtime's `licence_extract` is copied
-# to vendor/licences/<dest file stem>.txt. Never commit them. URLs are pinned to
-# immutable revisions; every download is checked against its SHA-256.
+# to vendor/licences/<dest file stem>.txt. Never commit them. URLs are pinned
+# revisions or immutable release assets (hubert.onnx is hosted on this repo's
+# base-models-1 prerelease, made by tools/export-hubert); every download is
+# checked against its SHA-256.
 
 [[model]]
-name = "ContentVec (vec-768-layer-12)"
-url = "https://huggingface.co/NaruseMioShirakana/MoeSS-SUBModel/resolve/3ff2e37e161ebcb3c4711e7ec870472342260842/vec-768-layer-12.onnx"
-sha256 = "b3886e7dff1495cda514f94f4680a7b1261e05d6929f5c764cdb17934b413c2a"
-licence = "GPL-3.0 (NaruseMioShirakana/MoeSS-SUBModel). Fetched for builds only; review before the M6 installer bundles it."
+name = "HuBERT base (RVC, MIT)"
+url = "https://github.com/mmhy2003/VoiceChanger/releases/download/base-models-1/hubert.onnx"
+sha256 = "133fb6e66b41fecaa107c5ce0a8fcc3491b245c18b12cc54d2137b95cbd982a0"
+licence = "MIT (lj1995/VoiceConversionWebUI)"
 dest = "models/hubert.onnx"
 
 [[model]]

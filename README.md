@@ -4,7 +4,7 @@ Real-time AI voice changer for Windows, written in Rust. Runs RVC voice models l
 
 ## Status
 
-Pre-alpha. Milestones M0 (project setup) and M1 (audio skeleton) are done. M2 (the inference engine with offline conversion) is in progress. Nothing is released.
+Pre-alpha. Milestones M0 to M3 are done and M4 (model library, saved settings and hotkey) is in progress. Nothing is released.
 
 ## Requirements
 
@@ -40,6 +40,22 @@ The `--stream` form runs the real-time streamer over the file and prints the per
 - `--sr 32000|40000|48000` is needed when the model has no `sr` metadata.
 - Only RVC WebUI ONNX exports with F0 (fp32) are supported. fp16 exports and models without F0 are rejected.
 - `--provider dml` (the default) uses DirectML. `--provider cuda` needs a CUDA build of `onnxruntime.dll` in place of the DirectML one. If a provider fails, the engine falls back to the CPU with a warning.
+
+## Model library and settings
+
+Import a voice on the Models tab with **Import…** or by dropping `.onnx` files on the window. Each model is checked and copied into the library. If the model does not say its sample rate, the app asks for it (32, 40 or 48 kHz). A dropped or picked `.pth` or `.zip` is not imported: the app offers to open it in the Convert tab instead.
+
+VoiceChanger keeps its files in three folders:
+
+| Folder | Contents |
+|---|---|
+| `%APPDATA%\VoiceChanger\models` | The imported models, their icons and the `library.toml` index |
+| `%APPDATA%\VoiceChanger\config` | `settings.toml`: devices, last model, pitch per model and every control |
+| `%LOCALAPPDATA%\VoiceChanger\logs` | Daily rotating log files (Settings → General → **Open logs folder**) |
+
+The global Start/Stop hotkey is off by default. Set it in Settings → General; the combination needs at least one modifier (Ctrl, Alt or Shift); Esc cancels recording.
+
+If `settings.toml` or `library.toml` cannot be read, it is kept as `settings.toml.bad` or `library.toml.bad` and the app starts with defaults or an empty library. Model files are never deleted.
 
 ## Contributing
 

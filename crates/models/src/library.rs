@@ -1,7 +1,7 @@
 //! The model library: `.onnx` files in one folder, indexed by `library.toml`.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
@@ -136,6 +136,20 @@ impl Library {
         f0: bool,
     ) -> Result<ModelEntry, LibraryError> {
         let staged = copy_model(&self.root, src, &self.ids())?;
+        self.add(staged.clone(), sample_rate, f0).inspect_err(|_| {
+            discard_staged(&self.root, &staged);
+        })
+    }
+
+    /// Writes `bytes` into the library as a model called `name` and indexes it. If indexing fails, the file is deleted.
+    pub fn add_bytes(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        sample_rate: u32,
+        f0: bool,
+    ) -> Result<ModelEntry, LibraryError> {
+        let staged = stage_bytes(&self.root, name, bytes, &self.ids())?;
         self.add(staged.clone(), sample_rate, f0).inspect_err(|_| {
             discard_staged(&self.root, &staged);
         })
@@ -299,13 +313,7 @@ pub fn copy_model(root: &Path, src: &Path, taken: &[String]) -> Result<StagedMod
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let base = slug(&name);
-    let free =
-        |id: &str| !taken.iter().any(|t| t == id) && !root.join(format!("{id}.onnx")).exists();
-    let id = std::iter::once(base.clone())
-        .chain((2..).map(|n| format!("{base}-{n}")))
-        .find(|id| free(id))
-        .expect("an unbounded sequence has a free id");
+    let id = free_id(root, &slug(&name), taken);
     let file = format!("{id}.onnx");
     let dest = root.join(&file);
     let part = with_suffix(&dest, ".part");
@@ -317,6 +325,50 @@ pub fn copy_model(root: &Path, src: &Path, taken: &[String]) -> Result<StagedMod
         return Err(e.into());
     }
     Ok(StagedModel { id, name, file })
+}
+
+/// Writes `bytes` into `root` as `<id>.onnx`. The name is trimmed and cannot be empty; `id` is `slug(name)`, made unique as in
+/// [`copy_model`]. A failed write leaves no file behind and keeps the original I/O error.
+pub fn stage_bytes(
+    root: &Path,
+    name: &str,
+    bytes: &[u8],
+    taken: &[String],
+) -> Result<StagedModel, LibraryError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(LibraryError::EmptyName);
+    }
+    let id = free_id(root, &slug(name), taken);
+    let file = format!("{id}.onnx");
+    let dest = root.join(&file);
+    let part = with_suffix(&dest, ".part");
+    let written = fs::create_dir_all(root)
+        .and_then(|()| fs::File::create(&part))
+        .and_then(|mut f| {
+            f.write_all(bytes)?;
+            f.sync_all()
+        })
+        .and_then(|()| fs::rename(&part, &dest));
+    if let Err(e) = written {
+        let _ = fs::remove_file(&part);
+        return Err(e.into());
+    }
+    Ok(StagedModel {
+        id,
+        name: name.to_string(),
+        file,
+    })
+}
+
+/// The first of `base`, `base-2`, `base-3`, … that is not in `taken` and has no `<id>.onnx` in `root`.
+fn free_id(root: &Path, base: &str, taken: &[String]) -> String {
+    let free =
+        |id: &str| !taken.iter().any(|t| t == id) && !root.join(format!("{id}.onnx")).exists();
+    std::iter::once(base.to_string())
+        .chain((2..).map(|n| format!("{base}-{n}")))
+        .find(|id| free(id))
+        .expect("an unbounded sequence has a free id")
 }
 
 /// Deletes a staged file that was never added.
@@ -483,6 +535,102 @@ mod tests {
         assert!(root.join("bob.onnx").is_file());
         discard_staged(&root, &staged);
         assert!(file_names(&root).is_empty());
+    }
+
+    #[test]
+    fn add_bytes_indexes_model() {
+        let dir = TempDir::new("add-bytes");
+        let root = dir.path().join("models");
+        let (mut lib, _) = Library::open(root.clone());
+
+        let entry = lib.add_bytes("Ana v2", b"onnx", 48_000, true).unwrap();
+
+        let expected = ModelEntry {
+            id: "ana-v2".into(),
+            name: "Ana v2".into(),
+            file: "ana-v2.onnx".into(),
+            sample_rate: 48_000,
+            f0: true,
+            default_pitch: 0,
+            icon: None,
+        };
+        assert_eq!(entry, expected);
+        assert_eq!(lib.entries(), std::slice::from_ref(&expected));
+        assert_eq!(std::fs::read(root.join("ana-v2.onnx")).unwrap(), b"onnx");
+        assert_eq!(file_names(&root), vec!["ana-v2.onnx", INDEX_FILE]);
+
+        let (reopened, note) = Library::open(root);
+        assert_eq!(note, None);
+        assert_eq!(reopened.entries(), std::slice::from_ref(&expected));
+    }
+
+    #[test]
+    fn add_bytes_gives_unique_names() {
+        let dir = TempDir::new("add-bytes-unique");
+        let root = dir.path().join("models");
+        let (mut lib, _) = Library::open(root.clone());
+
+        let first = lib.add_bytes("Ana v2", b"a", 40_000, true).unwrap();
+        let second = lib.add_bytes("Ana v2", b"b", 40_000, true).unwrap();
+        assert_eq!(first.id, "ana-v2");
+        assert_eq!(second.id, "ana-v2-2");
+        assert_eq!(second.file, "ana-v2-2.onnx");
+
+        // A file left in the folder without an entry also takes the name.
+        std::fs::write(root.join("ana-v2-3.onnx"), b"orphan").unwrap();
+        let third = lib.add_bytes("Ana v2", b"c", 40_000, true).unwrap();
+        assert_eq!(third.id, "ana-v2-4");
+        assert_eq!(
+            std::fs::read(root.join("ana-v2-3.onnx")).unwrap(),
+            b"orphan"
+        );
+        assert_eq!(std::fs::read(root.join("ana-v2-4.onnx")).unwrap(), b"c");
+    }
+
+    #[test]
+    fn add_bytes_rejects_empty_name() {
+        let dir = TempDir::new("add-bytes-empty");
+        let root = dir.path().join("models");
+        let (mut lib, _) = Library::open(root.clone());
+
+        assert!(matches!(
+            lib.add_bytes("  ", b"x", 40_000, true),
+            Err(LibraryError::EmptyName)
+        ));
+        assert!(lib.entries().is_empty());
+        assert!(!root.exists() || file_names(&root).is_empty());
+    }
+
+    #[test]
+    fn stage_bytes_failure_leaves_no_file() {
+        let dir = TempDir::new("stage-failure");
+        // A file in place of the library folder makes creating it fail.
+        let root = dir.path().join("models");
+        std::fs::write(&root, b"not a folder").unwrap();
+
+        assert!(matches!(
+            stage_bytes(&root, "Ana", b"x", &[]),
+            Err(LibraryError::Io(_))
+        ));
+        assert_eq!(file_names(dir.path()), vec!["models"]);
+        assert_eq!(std::fs::read(&root).unwrap(), b"not a folder");
+    }
+
+    #[test]
+    fn stage_bytes_trims_name() {
+        let dir = TempDir::new("stage-trim");
+        let root = dir.path().join("models");
+
+        let staged = stage_bytes(&root, "  Ana v2 \t", b"x", &[]).unwrap();
+        assert_eq!(
+            staged,
+            StagedModel {
+                id: "ana-v2".into(),
+                name: "Ana v2".into(),
+                file: "ana-v2.onnx".into(),
+            }
+        );
+        assert_eq!(file_names(&root), vec!["ana-v2.onnx"]);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 mod app;
 mod config;
+mod convert;
 mod engine;
 mod files;
 mod hotkey;

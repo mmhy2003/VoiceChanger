@@ -25,6 +25,28 @@ pub fn pick_file(
     rx
 }
 
+/// Opens the native save dialog on a "vc-file-dialog" thread, like [`pick_file`]; sends `None`
+/// when cancelled.
+pub fn save_file(
+    title: &'static str,
+    default_name: String,
+    filter: &'static str,
+    exts: &'static [&'static str],
+) -> Receiver<Option<PathBuf>> {
+    let (tx, rx) = mpsc::channel();
+    let _ = thread::Builder::new()
+        .name("vc-file-dialog".into())
+        .spawn(move || {
+            let path = rfd::FileDialog::new()
+                .set_title(title)
+                .set_file_name(default_name)
+                .add_filter(filter, exts)
+                .save_file();
+            let _ = tx.send(path);
+        });
+    rx
+}
+
 /// Opens `dir` in Explorer, creating it first; errors are logged.
 pub fn open_folder(dir: &Path) {
     if let Err(e) = std::fs::create_dir_all(dir) {

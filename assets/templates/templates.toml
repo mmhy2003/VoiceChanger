@@ -1,0 +1,68 @@
+# Weight-free RVC v2 templates, written by tools/export-templates/export.py.
+# Do not edit by hand: re-export instead (see tools/export-templates/README.md).
+
+[[template]]
+file = "rvc-v2-f0-32k.onnx"
+sha256 = "a48c31d0b06cc16ee31211c5b9c7ade47309d0f6e33412dfe4688a7c4ccce7fa"
+rvc_commit = "d60cd3d009b7e438f92f8624fa89b710d10c6a39"
+torch = "2.4.1+cpu"
+[template.config]
+spec_channels = 513
+inter_channels = 192
+hidden_channels = 192
+filter_channels = 768
+n_heads = 2
+n_layers = 6
+kernel_size = 3
+resblock = "1"
+resblock_kernel_sizes = [3, 7, 11]
+resblock_dilation_sizes = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+upsample_rates = [10, 8, 2, 2]
+upsample_initial_channel = 512
+upsample_kernel_sizes = [20, 16, 4, 4]
+gin_channels = 256
+sr = 32000
+
+[[template]]
+file = "rvc-v2-f0-40k.onnx"
+sha256 = "66d52a66af451762c2e2ac279122a0f6fa7090b75a2070d44a71cdf3305a0b1c"
+rvc_commit = "d60cd3d009b7e438f92f8624fa89b710d10c6a39"
+torch = "2.4.1+cpu"
+[template.config]
+spec_channels = 1025
+inter_channels = 192
+hidden_channels = 192
+filter_channels = 768
+n_heads = 2
+n_layers = 6
+kernel_size = 3
+resblock = "1"
+resblock_kernel_sizes = [3, 7, 11]
+resblock_dilation_sizes = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+upsample_rates = [10, 10, 2, 2]
+upsample_initial_channel = 512
+upsample_kernel_sizes = [16, 16, 4, 4]
+gin_channels = 256
+sr = 40000
+
+[[template]]
+file = "rvc-v2-f0-48k.onnx"
+sha256 = "221ebda2ffae2a73ebc4b5b3c00fd7d607334dc07fe78d42ac41b2868d9cdfed"
+rvc_commit = "d60cd3d009b7e438f92f8624fa89b710d10c6a39"
+torch = "2.4.1+cpu"
+[template.config]
+spec_channels = 1025
+inter_channels = 192
+hidden_channels = 192
+filter_channels = 768
+n_heads = 2
+n_layers = 6
+kernel_size = 3
+resblock = "1"
+resblock_kernel_sizes = [3, 7, 11]
+resblock_dilation_sizes = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+upsample_rates = [12, 10, 2, 2]
+upsample_initial_channel = 512
+upsample_kernel_sizes = [24, 20, 4, 4]
+gin_channels = 256
+sr = 48000

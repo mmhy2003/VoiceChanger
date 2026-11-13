@@ -1,0 +1,173 @@
+# Public RVC v2 models for the local corpus test (`cargo xtask fetch-test-models`).
+# Never committed, never in CI.
+# Files land in vendor/test-models/ (gitignored). URLs are pinned to commits;
+# every download is checked against its SHA-256. All are RVC v2 with F0,
+# checked with torch.load(weights_only=True); the rate is in each name.
+
+[[model]]
+name = "binant/Adele__RVC_-_400_Epochs_ (model.pth, 32k)"
+url = "https://huggingface.co/binant/Adele__RVC_-_400_Epochs_/resolve/b7ad6e64e96ab0c10893990df70d6d31aca4f1aa/model.pth"
+sha256 = "2dfbcac394ea30bdcf39a284ce936182c2ef0b27508317b4107b5367478d139a"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/adele-rvc-400-epochs.pth"
+
+[[model]]
+name = "binant/Kurt_Cobain__From_Nirvana___RVC_v2__150_Epochs (model.pth, 32k)"
+url = "https://huggingface.co/binant/Kurt_Cobain__From_Nirvana___RVC_v2__150_Epochs/resolve/9c456e1d475d888309c9684d6e12c1d22abde4d8/model.pth"
+sha256 = "4d4e14b96fbe26c7b3ab796c29a8ecbdc57e89a4679314e8e5d9429a0e7e1936"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/kurt-cobain-from-nirvana-rvc-v2-150-epochs.pth"
+
+[[model]]
+name = "binant/Peter_Griffin__Family_Guy___RVC_V2__300_Epoch (model.pth, 32k)"
+url = "https://huggingface.co/binant/Peter_Griffin__Family_Guy___RVC_V2__300_Epoch/resolve/1d077abfb5d6f276e444f981e70a1d4902756703/model.pth"
+sha256 = "a734aace269870d277d8c53d7e21799921eaf55c8e2382c11ec636ef1da446c2"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/peter-griffin-family-guy-rvc-v2-300-epoch.pth"
+
+[[model]]
+name = "binant/SpongeBob_SquarePants__RVC_v2_ (model.pth, 32k)"
+url = "https://huggingface.co/binant/SpongeBob_SquarePants__RVC_v2_/resolve/eb6c20a57a359b25eabd2b458c776bdb16aa2851/model.pth"
+sha256 = "a2d4e8e101f790538a4548bb3d504bb858ca8d1617ffc4cf7f0510841697a7e2"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/spongebob-squarepants-rvc-v2.pth"
+
+[[model]]
+name = "TogetsuDo/amiya-rvc (amiya.pth, 40k)"
+url = "https://huggingface.co/TogetsuDo/amiya-rvc/resolve/a322627f45fd3b9f377eb1e3e3547fd5babee78e/amiya.pth"
+sha256 = "576a3f8b1202125f4af2d4887336327c5bfb2781f6b595d89a0aa80caa97792b"
+licence = "other, see the model card (TogetsuDo/amiya-rvc). Local test use only, never redistributed."
+dest = "test-models/amiya-rvc.pth"
+
+[[model]]
+name = "YukiKaze1337/DaFeiYu_rvc_v2_40k (dafeiyu.pth, 40k)"
+url = "https://huggingface.co/YukiKaze1337/DaFeiYu_rvc_v2_40k/resolve/ee6b15f729dc5757cbe848e73460366dcae2feca/dafeiyu.pth"
+sha256 = "eaa043e9329fa7a6c9002ccff4efe7667d42ab8187eb5f9297c5f2b2628c9935"
+licence = "MIT (YukiKaze1337/DaFeiYu_rvc_v2_40k). Local test use only, never redistributed."
+dest = "test-models/dafeiyu-rvc-v2-40k.pth"
+
+[[model]]
+name = "binant/Donald_Trump__RVC_v2_ (model.pth, 40k)"
+url = "https://huggingface.co/binant/Donald_Trump__RVC_v2_/resolve/c60eb989f2ab84bc8d17074a7993fd7a8986b929/model.pth"
+sha256 = "5f20a511548d0f496b379d8702124e2dc86eefe691d457c0a1c8791f327d06ae"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/donald-trump-rvc-v2.pth"
+
+[[model]]
+name = "binant/Drake_RVC (model.pth, 40k)"
+url = "https://huggingface.co/binant/Drake_RVC/resolve/02e576face475767e3c759587a4d4ede3878fe54/model.pth"
+sha256 = "59cbdcdf154e824d17937eec64f686afa350f98fc4b2974cca328e8017563007"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/drake-rvc.pth"
+
+[[model]]
+name = "binant/Freddie_Mercury__RVC_-_700_Epochs_ (model.pth, 40k)"
+url = "https://huggingface.co/binant/Freddie_Mercury__RVC_-_700_Epochs_/resolve/d63649ca04824a63fbc87c3f8e25a78ef46b05d8/model.pth"
+sha256 = "bf1188b5711b465206f908cfe55c39d39f9029a4cbdabeb0b549c242d814114a"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/freddie-mercury-rvc-700-epochs.pth"
+
+[[model]]
+name = "SpyTechLabs/Hisanimations-RVCv2 (HisanimationsV3_v2.zip, 40k)"
+url = "https://huggingface.co/SpyTechLabs/Hisanimations-RVCv2/resolve/bde54673a2188a941d1a855497f5d7e487b46fab/HisanimationsV3_v2.zip"
+sha256 = "12dfcbbcabb0de775cd71d23eb1cf7e3734158e3c668b5c47d50106a82239686"
+licence = "MIT (SpyTechLabs/Hisanimations-RVCv2). Local test use only, never redistributed."
+dest = "test-models/hisanimations-rvcv2.zip"
+
+[[model]]
+name = "maotianchen/maobailing_rvc (maobailing_rvc.pth, 40k)"
+url = "https://huggingface.co/maotianchen/maobailing_rvc/resolve/e56357e07e6788617318733dce1e10eb92889633/maobailing_rvc.pth"
+sha256 = "c386a153eace55a15cc50b02d102732fa08c1c6a144184be3424c2188a46867c"
+licence = "Apache-2.0 (maotianchen/maobailing_rvc). Local test use only, never redistributed."
+dest = "test-models/maobailing-rvc.pth"
+
+[[model]]
+name = "TogetsuDo/mutsumi-rvc (mutsumi.pth, 40k)"
+url = "https://huggingface.co/TogetsuDo/mutsumi-rvc/resolve/6ab2bb27aa3734afc63d39bde187ca84f5978ca2/mutsumi.pth"
+sha256 = "988f7fddb83108d560c60993a6544062ac93c094934e3070a7a21650b22ceb9c"
+licence = "other, see the model card (TogetsuDo/mutsumi-rvc). Local test use only, never redistributed."
+dest = "test-models/mutsumi-rvc.pth"
+
+[[model]]
+name = "ichayc/RVC_Frieren (frieren1.1.pth, 40k)"
+url = "https://huggingface.co/ichayc/RVC_Frieren/resolve/1a7005a7de01262642332553115311b2419afd63/frieren1.1.pth"
+sha256 = "54d59e395a13c913c489b2f60b9a758c88b320ca20544986de0457c1599521a9"
+licence = "OpenRAIL (ichayc/RVC_Frieren). Local test use only, never redistributed."
+dest = "test-models/rvc-frieren.pth"
+
+[[model]]
+name = "ichayc/RVC_Sylphy (sylphy1.0.pth, 40k)"
+url = "https://huggingface.co/ichayc/RVC_Sylphy/resolve/f422b02de26ce97ee6d66920d4ae4149ca54b953/sylphy1.0.pth"
+sha256 = "7cc2821e8902ebfdc914c7ea37b730eb00b9f100014d2577b0513a789dff5039"
+licence = "OpenRAIL (ichayc/RVC_Sylphy). Local test use only, never redistributed."
+dest = "test-models/rvc-sylphy.pth"
+
+[[model]]
+name = "Zonas/RVC2-IU-1K (IU-Zonas.pth, 40k)"
+url = "https://huggingface.co/Zonas/RVC2-IU-1K/resolve/8defb7fd15e368d9ec56b010a2284724f12ac03d/IU-Zonas.pth"
+sha256 = "cc0f973b74350d8b723b771dfbdee621db0c104bd2b73cc4356a3d25863c5dbd"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/rvc2-iu-1k.pth"
+
+[[model]]
+name = "TogetsuDo/sakiko-rvc (sakiko_v2.pth, 40k)"
+url = "https://huggingface.co/TogetsuDo/sakiko-rvc/resolve/61676cf82a23a9d736c0501021c905cf8b9c2e2f/sakiko_v2.pth"
+sha256 = "1a5640c299d70631b3ecc54f68b3939afe243fbb39c4017310045ee2e4ca50ae"
+licence = "other, see the model card (TogetsuDo/sakiko-rvc). Local test use only, never redistributed."
+dest = "test-models/sakiko-rvc.pth"
+
+[[model]]
+name = "SpyTechLabs/Saxton-Hale-RVCv2-Matthew-Simmons (SaxtonHale-MatthewSimmons.zip, 40k)"
+url = "https://huggingface.co/SpyTechLabs/Saxton-Hale-RVCv2-Matthew-Simmons/resolve/c2dfaf7915bcc3e26b527365a57fa034881ca62c/SaxtonHale-MatthewSimmons.zip"
+sha256 = "fb3877426dc739a95433637fb317dfb7d2ced888f4c3f667cdb91e2be0bdc51a"
+licence = "MIT (SpyTechLabs/Saxton-Hale-RVCv2-Matthew-Simmons). Local test use only, never redistributed."
+dest = "test-models/saxton-hale-rvcv2-matthew-simmons.zip"
+
+[[model]]
+name = "binant/Travis_Scott_-_RVC_-_1000_Epoch_48k (model.pth, 40k)"
+url = "https://huggingface.co/binant/Travis_Scott_-_RVC_-_1000_Epoch_48k/resolve/c68785e8fac5687dfd385f8e80db7c3925f040a3/model.pth"
+sha256 = "303311ff48ee0ec1bf0d17d2d077370cc00c22d59a35491cd4b2a809c0f4dd56"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/travis-scott-rvc-1000-epoch.pth"
+
+[[model]]
+name = "TogetsuDo/eyjafjalla-rvc (eyjafjalla.pth, 48k)"
+url = "https://huggingface.co/TogetsuDo/eyjafjalla-rvc/resolve/e1c782d723acdaf27ab561bb86a656c3e92cb553/eyjafjalla.pth"
+sha256 = "d1e3b4985978c9eed24d461497e2c095f6c9ffe2812440f7b40cde5f428542cc"
+licence = "other, see the model card (TogetsuDo/eyjafjalla-rvc). Local test use only, never redistributed."
+dest = "test-models/eyjafjalla-rvc.pth"
+
+[[model]]
+name = "binant/Frank_Sinatra__51600_Steps___250_Epochs__RVC (model.pth, 48k)"
+url = "https://huggingface.co/binant/Frank_Sinatra__51600_Steps___250_Epochs__RVC/resolve/1af972b2a2a1b8f7eda8211fe33839c9914a40dc/model.pth"
+sha256 = "974cba04aecd1ab2bce1895225ad7e4e47ead21a67feba74d9b672b69a41bfc9"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/frank-sinatra-51600-steps-250-epochs-rvc.pth"
+
+[[model]]
+name = "binant/Hatsune_Miku__RVC_v2_ (model.pth, 48k)"
+url = "https://huggingface.co/binant/Hatsune_Miku__RVC_v2_/resolve/b05cba64eaa30f3bac39ff8ce7caff14a9af122b/model.pth"
+sha256 = "ed8522a71c0985fd6825d7c91330dea5b8dc036ec4a2d5cad89fdebe4002a37c"
+licence = "unspecified (local test use only, never redistributed)"
+dest = "test-models/hatsune-miku-rvc-v2.pth"
+
+[[model]]
+name = "TogetsuDo/rana-rvc (rana.pth, 48k)"
+url = "https://huggingface.co/TogetsuDo/rana-rvc/resolve/d55a1580674a0408cbefb0dbe30a6438a47e3050/rana.pth"
+sha256 = "764309604e2b2cde590769d28e4380345a256307af56d27b2fa0cc37fcbc7e13"
+licence = "other, see the model card (TogetsuDo/rana-rvc). Local test use only, never redistributed."
+dest = "test-models/rana-rvc.pth"
+
+[[model]]
+name = "TogetsuDo/soyo-rvc (soyo.pth, 48k)"
+url = "https://huggingface.co/TogetsuDo/soyo-rvc/resolve/3c58d79a0ad23053050c914c7b598428fbfb2613/soyo.pth"
+sha256 = "90ffe7d770399cbd67e33815691c80cd9fafdcd6ea64e10d89af0223d3bab100"
+licence = "other, see the model card (TogetsuDo/soyo-rvc). Local test use only, never redistributed."
+dest = "test-models/soyo-rvc.pth"
+
+[[model]]
+name = "TogetsuDo/tomori-rvc (tomori.pth, 48k)"
+url = "https://huggingface.co/TogetsuDo/tomori-rvc/resolve/38147a63386d278c60abf0e7f4c48559b1d2ec5d/tomori.pth"
+sha256 = "7a19e21e455bc0ffc8af9219dd3aabc0cba9d4c6b9cde4e92a37b17b526ff57e"
+licence = "other, see the model card (TogetsuDo/tomori-rvc). Local test use only, never redistributed."
+dest = "test-models/tomori-rvc.pth"

@@ -136,4 +136,32 @@ mod tests {
         assert_eq!(m.model.len(), 2);
         assert_eq!(m.runtime.len(), 2);
     }
+
+    #[test]
+    fn repo_test_manifest_is_valid() {
+        let m = parse(include_str!("../../assets/test-models.toml")).unwrap();
+        assert!(m.model.len() >= 20, "only {} models", m.model.len());
+        assert!(m.runtime.is_empty());
+        let mut dests = std::collections::HashSet::new();
+        for entry in &m.model {
+            let name = &entry.name;
+            let dest = &entry.dest;
+            assert!(dest.starts_with("test-models/"), "{name}: {dest}");
+            assert!(
+                dest.ends_with(".pth") || dest.ends_with(".zip"),
+                "{name}: {dest}"
+            );
+            assert!(dests.insert(dest), "{name}: duplicate dest {dest}");
+            let revision = entry
+                .url
+                .split_once("/resolve/")
+                .and_then(|(_, rest)| rest.split('/').next())
+                .unwrap_or_default();
+            assert!(
+                revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{name}: url not pinned to a commit: {}",
+                entry.url
+            );
+        }
+    }
 }

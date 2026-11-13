@@ -18,15 +18,17 @@ use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Strea
 use crate::config::{Config, DevicesConfig, PerfConfig, Prefs, SaveTracker, SavedDevice};
 use vc_models::{Library, ModelEntry};
 
+use crate::convert::Converter;
 use crate::engine::{EngineProcessor, ErrorSlot};
 use crate::files;
 use crate::hotkey::{Combo, Hotkeys};
-use crate::import::{DropAction, Importer, Notice, classify_drop};
+use crate::import::{DropAction, DropRoute, Importer, Notice, classify_drop, route_drop};
 use crate::model::{self, ModelSlot, provider_label};
 use crate::paths::AppDirs;
 use crate::status_bar::{self, StatusSnapshot};
 use crate::switch::{PendingSwitch, SwitchPlan, pitch_for, plan_switch};
 use crate::tabs;
+use crate::tabs::convert::ConvertUi;
 use crate::tabs::models::ModelsUi;
 use crate::tabs::voice::start_hint;
 use crate::widgets::MeterState;
@@ -274,6 +276,10 @@ pub struct VcApp {
     pub(crate) notices: Vec<Notice>,
     /// The PyTorch file handed to the Convert tab.
     pub(crate) convert_file: Option<PathBuf>,
+    /// Inspects and converts PyTorch models in the background.
+    pub(crate) converter: Converter,
+    /// The Convert tab's open pickers.
+    pub(crate) convert_ui: ConvertUi,
     /// The open Import… picker's answer.
     pub(crate) import_pick_rx: Option<Receiver<Option<PathBuf>>>,
     /// Renaming, delete confirmation and the icon picker on the Models tab.
@@ -350,6 +356,8 @@ impl VcApp {
             })),
             notices: Vec::new(),
             convert_file: None,
+            converter: Converter::new(Arc::new(vc_convert::inspect), Arc::new(vc_convert::convert)),
+            convert_ui: ConvertUi::default(),
             import_pick_rx: None,
             models_ui: ModelsUi::default(),
             hotkeys,
@@ -384,16 +392,29 @@ impl VcApp {
         }
     }
 
-    /// Takes files dropped on the window; any drop opens the Models tab.
+    /// Takes files dropped on the window. A PyTorch file dropped on the Convert tab is converted;
+    /// anything else opens the Models tab.
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        if dropped.is_empty() {
-            return;
-        }
-        self.tab = Tab::Models;
         for path in dropped.into_iter().filter_map(|f| f.path) {
-            self.receive_file(path);
+            match route_drop(self.tab == Tab::Convert, &path) {
+                DropRoute::Convert(path) => self.convert_file = Some(path),
+                DropRoute::Library(path) => {
+                    self.tab = Tab::Models;
+                    self.receive_file(path);
+                }
+            }
         }
+    }
+
+    /// Opens the file handed to the Convert tab and takes the converter's answers.
+    fn poll_convert(&mut self) {
+        if !self.converter.is_converting()
+            && let Some(path) = self.convert_file.take()
+        {
+            self.converter.open(path);
+        }
+        self.converter.poll(&mut self.library);
     }
 
     /// Picks up the Import… picker's answer and the importer's results.
@@ -699,6 +720,7 @@ impl eframe::App for VcApp {
         self.poll_switch();
         self.handle_drops(ctx);
         self.poll_import();
+        self.poll_convert();
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
         if self.hotkeys.take_pressed() {
@@ -755,6 +777,8 @@ impl eframe::App for VcApp {
             || self.importer.is_busy()
             || self.import_pick_rx.is_some()
             || self.models_ui.icon_pick.is_some()
+            || self.converter.is_busy()
+            || self.convert_ui.is_waiting()
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         }

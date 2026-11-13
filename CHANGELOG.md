@@ -7,6 +7,8 @@ and the project uses `X.Y.Z` versions as described in [AGENTS.md](AGENTS.md).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-13
+
 ### Added
 - Project setup: Rust workspace (`app`, `audio`, `engine`, `models`, `convert`), MIT licence, contributor guides, agent guides and CI on Windows.
 - Audio skeleton: Voice / Models / Convert / Settings tabs, microphone, virtual cable and monitor selection, mic passthrough with live level meters, and a clean stop with a message when a device is unplugged.

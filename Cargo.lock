@@ -4343,7 +4343,7 @@ dependencies = [
 
 [[package]]
 name = "vc-audio"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cpal",
  "ringbuf",
@@ -4355,7 +4355,7 @@ dependencies = [
 
 [[package]]
 name = "vc-convert"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "half",
  "prost",
@@ -4371,7 +4371,7 @@ dependencies = [
 
 [[package]]
 name = "vc-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "hound",
  "ort",
@@ -4384,7 +4384,7 @@ dependencies = [
 
 [[package]]
 name = "vc-models"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -4405,7 +4405,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voicechanger"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "dirs",
  "eframe",
@@ -5347,7 +5347,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "prost-build",
  "protox",

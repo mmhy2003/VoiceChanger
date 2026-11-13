@@ -18,6 +18,7 @@ check "changelog last section" "$(printf '### Fixed\n- Three.')" "$(bash "$v" ch
 check "changelog missing fails" "1" "$(status bash "$v" changelog 9.9.9 "$fx/CHANGELOG.fixture.md")"
 check "changelog empty fails" "1" "$(status bash "$v" changelog 1.2.2 "$fx/CHANGELOG.fixture.md")"
 check "changelog prefix not matched" "1" "$(status bash "$v" changelog 1.2 "$fx/CHANGELOG.fixture.md")"
-check "repo changelog has Unreleased" "0" "$(status bash "$v" changelog Unreleased "$here/../../CHANGELOG.md")"
+repo_version=$(bash "$v" read "$here/../../Cargo.toml")
+check "repo changelog has the Cargo version" "0" "$(status bash "$v" changelog "$repo_version" "$here/../../CHANGELOG.md")"
 check "no command is usage error" "2" "$(status bash "$v")"
 exit $fail

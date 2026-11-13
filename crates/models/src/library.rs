@@ -150,15 +150,17 @@ impl Library {
         self.edit(id, |e| e.name = name.to_string())
     }
 
-    /// Removes a model from the index, then deletes its file and icon. Files already gone are ignored.
+    /// Deletes a model's file, then removes it from the index and deletes its icon. Files already
+    /// gone are ignored. If the file cannot be deleted (it may be in use), the model stays listed.
+    /// A leftover icon is not an error.
     pub fn remove(&mut self, id: &str) -> Result<(), LibraryError> {
         let i = self.position(id)?;
         let mut entries = self.entries.clone();
         let entry = entries.remove(i);
-        self.commit(entries)?;
         remove_if_exists(&self.model_path(&entry))?;
+        self.commit(entries)?;
         if let Some(icon) = self.icon_path(&entry) {
-            remove_if_exists(&icon)?;
+            let _ = remove_if_exists(&icon);
         }
         Ok(())
     }
@@ -583,6 +585,21 @@ mod tests {
         std::fs::remove_file(root.join("b.onnx")).unwrap();
         lib.remove("b").unwrap();
         assert!(lib.entries().is_empty());
+    }
+
+    #[test]
+    fn remove_keeps_entry_when_file_cannot_be_deleted() {
+        let dir = TempDir::new("remove-locked");
+        let mut lib = library_with(&dir, &["a", "b"]);
+        let root = lib.root().to_path_buf();
+        // A directory in place of the model file makes deleting it fail.
+        std::fs::remove_file(root.join("a.onnx")).unwrap();
+        std::fs::create_dir(root.join("a.onnx")).unwrap();
+
+        assert!(matches!(lib.remove("a"), Err(LibraryError::Io(_))));
+        assert_eq!(lib.ids(), vec!["a".to_string(), "b".to_string()]);
+        let (reopened, _) = Library::open(root);
+        assert_eq!(reopened.ids(), lib.ids());
     }
 
     #[test]

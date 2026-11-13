@@ -16,3 +16,6 @@ ringbuf = "0.5"
 rubato = "0.16"
 thiserror = "2"
 tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_System_Com"] }

@@ -210,6 +210,7 @@ fn output_stream(
 type OpenedDevices = (Opened, Vec<(OutputKind, Endpoint, Opened)>);
 
 fn open_devices(sel: &Selection) -> Result<OpenedDevices, StartError> {
+    crate::com::keep_alive();
     let host = cpal::host_from_id(cpal::HostId::Wasapi).map_err(|e| build_error("WASAPI", e))?;
 
     let input_dev = find(&host, host.input_devices(), &sel.input)?;

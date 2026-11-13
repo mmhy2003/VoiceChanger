@@ -77,6 +77,8 @@ pub struct ModelsUi {
     pub confirm_delete: Option<String>,
     /// The model whose icon is being picked, and the picker's answer.
     pub icon_pick: Option<(String, Receiver<Option<PathBuf>>)>,
+    /// The model whose default pitch is being dragged, and the value so far (saved on release).
+    pub pitch_drag: Option<(String, i32)>,
 }
 
 /// What a click on a library row asks for.
@@ -142,10 +144,15 @@ fn rows(ui: &mut egui::Ui, app: &mut VcApp) -> Option<Action> {
             ui.label(khz(entry.sample_rate));
             ui.add_enabled_ui(exists, |ui| {
                 ui.label("Default pitch");
-                let mut pitch = entry.default_pitch;
-                if ui
-                    .add(egui::DragValue::new(&mut pitch).range(PITCH_RANGE))
-                    .changed()
+                let drag = &mut app.models_ui.pitch_drag;
+                let mut pitch = match drag {
+                    Some((dragging, held)) if dragging == id => *held,
+                    _ => entry.default_pitch,
+                };
+                let resp = ui.add(egui::DragValue::new(&mut pitch).range(PITCH_RANGE));
+                let (changed, dragged) = (resp.changed(), resp.dragged());
+                if let Some(pitch) =
+                    pitch_edit(drag, id, pitch, changed, dragged, resp.drag_stopped())
                 {
                     action = Some(Action::Pitch(id.clone(), pitch));
                 }
@@ -325,6 +332,32 @@ fn poll_icon_pick(ctx: &egui::Context, app: &mut VcApp) {
     }
 }
 
+/// The default pitch to save after an edit of model `id`'s pitch field, if any. While dragging,
+/// the value is only held in `drag`; it is saved when the drag ends. Typing and arrow keys save
+/// at once.
+pub fn pitch_edit(
+    drag: &mut Option<(String, i32)>,
+    id: &str,
+    value: i32,
+    changed: bool,
+    dragged: bool,
+    drag_stopped: bool,
+) -> Option<i32> {
+    if drag_stopped {
+        return drag
+            .take_if(|(dragging, _)| dragging == id)
+            .map(|(_, held)| held);
+    }
+    match (changed, dragged) {
+        (true, true) => {
+            *drag = Some((id.to_string(), value));
+            None
+        }
+        (true, false) => Some(value),
+        _ => None,
+    }
+}
+
 /// Why the model cannot be deleted now.
 pub fn delete_blocked(is_active: bool, running: bool) -> Option<&'static str> {
     (is_active && running).then_some("Stop the voice before deleting the active model.")
@@ -390,6 +423,28 @@ mod tests {
         assert_eq!(delete_blocked(true, false), None);
         assert_eq!(delete_blocked(false, true), None);
         assert_eq!(delete_blocked(false, false), None);
+    }
+
+    #[test]
+    fn pitch_edit_commits_once_per_drag() {
+        let mut drag = None;
+        // Dragging only holds the value.
+        assert_eq!(pitch_edit(&mut drag, "a", 1, true, true, false), None);
+        assert_eq!(pitch_edit(&mut drag, "a", 3, true, true, false), None);
+        assert_eq!(drag, Some(("a".to_string(), 3)));
+        // Nothing changes on a frame without input.
+        assert_eq!(pitch_edit(&mut drag, "a", 3, false, true, false), None);
+        // Releasing commits the last value.
+        assert_eq!(pitch_edit(&mut drag, "a", 3, false, false, true), Some(3));
+        assert_eq!(drag, None);
+        // A click without movement commits nothing.
+        assert_eq!(pitch_edit(&mut drag, "a", 0, false, false, true), None);
+        // Typing or arrow keys commit at once.
+        assert_eq!(pitch_edit(&mut drag, "a", -2, true, false, false), Some(-2));
+        // Another row's release does not take this row's drag.
+        assert_eq!(pitch_edit(&mut drag, "a", 5, true, true, false), None);
+        assert_eq!(pitch_edit(&mut drag, "b", 0, false, false, true), None);
+        assert_eq!(drag, Some(("a".to_string(), 5)));
     }
 
     #[test]

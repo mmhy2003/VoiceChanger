@@ -1,5 +1,6 @@
 //! Audio device handling, ring buffers and resampling.
 
+mod com;
 pub mod control;
 pub mod devices;
 pub mod meter;

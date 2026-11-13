@@ -319,6 +319,7 @@ pub fn start_blocker(list: &DeviceList, sel: &Selection) -> Option<&'static str>
 
 /// Enumerates WASAPI endpoints with their IDs and names. Never fails: errors give empty lists.
 pub fn list_devices() -> DeviceList {
+    crate::com::keep_alive();
     let Ok(host) = cpal::host_from_id(cpal::HostId::Wasapi) else {
         return DeviceList::default();
     };

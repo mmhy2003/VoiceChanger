@@ -1,4 +1,4 @@
-//! One module per tab; each exposes `show(ui)`.
+//! One module per tab; each exposes `show(ui, app)`.
 
 pub mod convert;
 pub mod models;

@@ -16,7 +16,11 @@ use vc_audio::{
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
 use crate::config::{Config, DevicesConfig, PerfConfig, Prefs, SaveTracker, SavedDevice};
+use vc_models::Library;
+
 use crate::engine::{EngineProcessor, ErrorSlot};
+use crate::files;
+use crate::import::{DropAction, Importer, Notice, classify_drop};
 use crate::model::{self, ModelSlot, provider_label};
 use crate::paths::AppDirs;
 use crate::status_bar::{self, StatusSnapshot};
@@ -260,6 +264,16 @@ pub struct VcApp {
     prefs: Prefs,
     /// Writes the settings a moment after they change.
     save: SaveTracker,
+    /// The imported voice models.
+    pub(crate) library: Library,
+    /// Inspects and copies imported files in the background.
+    pub(crate) importer: Importer,
+    /// Messages on the Models tab, oldest first.
+    pub(crate) notices: Vec<Notice>,
+    /// The PyTorch file handed to the Convert tab.
+    pub(crate) convert_file: Option<PathBuf>,
+    /// The open Import… picker's answer.
+    pub(crate) import_pick_rx: Option<Receiver<Option<PathBuf>>>,
 }
 
 /// What `main` hands the app: its folders, the loaded settings and any notes from loading them.
@@ -279,9 +293,11 @@ impl VcApp {
         let shared = Arc::new(Shared::new());
         let audio = AudioControl::spawn(shared.clone());
         let state = AppState::from_config(audio.list().unwrap_or_default(), &startup.config);
+        let (library, library_note) = Library::open(startup.dirs.models.clone());
         let notes: Vec<&str> = startup
             .notes
             .iter()
+            .chain(&library_note)
             .chain(&state.notes)
             .map(String::as_str)
             .collect();
@@ -306,6 +322,66 @@ impl VcApp {
             dirs: startup.dirs,
             prefs: Prefs::from_config(&startup.config),
             save: SaveTracker::new(startup.config),
+            library,
+            importer: Importer::new(Arc::new(|p| {
+                vc_engine::inspect_model(p).map_err(|e| e.to_string())
+            })),
+            notices: Vec::new(),
+            convert_file: None,
+            import_pick_rx: None,
+        }
+    }
+
+    /// Opens the Import… picker; its answer is polled in `update`.
+    pub(crate) fn pick_import(&mut self) {
+        self.import_pick_rx = Some(files::pick_file(
+            "Import a voice model",
+            "Voice models",
+            &["onnx", "pth", "zip"],
+        ));
+    }
+
+    /// Imports, offers to convert or rejects a dropped or picked file.
+    pub(crate) fn receive_file(&mut self, path: PathBuf) {
+        match classify_drop(&path) {
+            DropAction::Import(path) => self.importer.enqueue(path),
+            DropAction::OfferConvert(path) => self.notices.push(Notice::OfferConvert(path)),
+            DropAction::Reject(msg) => self.notices.push(Notice::Error(msg)),
+        }
+    }
+
+    /// Takes files dropped on the window; any drop opens the Models tab.
+    fn handle_drops(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        self.tab = Tab::Models;
+        for path in dropped.into_iter().filter_map(|f| f.path) {
+            self.receive_file(path);
+        }
+    }
+
+    /// Picks up the Import… picker's answer and the importer's results.
+    fn poll_import(&mut self) {
+        if let Some(rx) = &self.import_pick_rx {
+            match rx.try_recv() {
+                Ok(Some(path)) => {
+                    self.import_pick_rx = None;
+                    self.receive_file(path);
+                }
+                Ok(None) | Err(TryRecvError::Disconnected) => self.import_pick_rx = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        for result in self.importer.poll(&mut self.library) {
+            self.notices.push(match result {
+                Ok(id) => {
+                    let name = self.library.get(&id).map_or(id.as_str(), |e| &e.name);
+                    Notice::Info(format!("Imported \"{name}\"."))
+                }
+                Err(msg) => Notice::Error(msg),
+            });
         }
     }
 
@@ -485,6 +561,8 @@ impl eframe::App for VcApp {
         }
         self.poll_status();
         self.poll_model();
+        self.handle_drops(ctx);
+        self.poll_import();
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
         self.push_voice();
@@ -511,8 +589,8 @@ impl eframe::App for VcApp {
         }
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Voice => tabs::voice::show(ui, self),
-            Tab::Models => tabs::models::show(ui),
-            Tab::Convert => tabs::convert::show(ui),
+            Tab::Models => tabs::models::show(ui, self),
+            Tab::Convert => tabs::convert::show(ui, self),
             Tab::Settings => tabs::settings::show(ui, self),
         });
         // Block, context and crossfade restart the stream on release; the model is kept.
@@ -531,7 +609,11 @@ impl eframe::App for VcApp {
 
         if self.is_running() {
             ctx.request_repaint_after(Duration::from_millis(33));
-        } else if self.model.is_loading() || self.pick_rx.is_some() {
+        } else if self.model.is_loading()
+            || self.pick_rx.is_some()
+            || self.importer.is_busy()
+            || self.import_pick_rx.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 

@@ -4,6 +4,8 @@
 mod app;
 mod config;
 mod engine;
+mod files;
+mod import;
 mod model;
 mod paths;
 mod status_bar;

@@ -6,6 +6,7 @@ use std::thread;
 
 use vc_engine::{Pipeline, PipelineConfig, Provider, StreamSettings};
 
+use crate::files;
 use crate::tabs::voice::khz;
 
 /// What the Voice tab shows about a loaded model.
@@ -169,21 +170,13 @@ pub fn model_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// Opens the native file picker on a "vc-file-dialog" thread; sends `None` when cancelled.
-/// rfd initialises COM, so it stays on its own thread: the UI thread is STA for OLE drag-and-drop.
-/// A spawn failure yields a closed channel.
+/// Opens the model file picker; sends `None` when cancelled.
 pub fn pick_model() -> Receiver<Option<PathBuf>> {
-    let (tx, rx) = mpsc::channel();
-    let _ = thread::Builder::new()
-        .name("vc-file-dialog".into())
-        .spawn(move || {
-            let path = rfd::FileDialog::new()
-                .set_title("Choose an RVC v2 ONNX model")
-                .add_filter("RVC v2 ONNX model", &["onnx"])
-                .pick_file();
-            let _ = tx.send(path);
-        });
-    rx
+    files::pick_file(
+        "Choose an RVC v2 ONNX model",
+        "RVC v2 ONNX model",
+        &["onnx"],
+    )
 }
 
 #[cfg(test)]

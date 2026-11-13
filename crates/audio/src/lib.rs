@@ -9,8 +9,8 @@ pub mod shared;
 pub mod worker;
 
 pub use devices::{
-    DeviceList, Selection, Warning, feedback_warnings, is_virtual_cable, list_devices,
-    start_blocker,
+    DeviceInfo, DeviceList, DeviceRef, Selection, Warning, feedback_warnings, is_virtual_cable,
+    list_devices, start_blocker,
 };
 pub use meter::{Level, db_to_gain, gain_to_db};
 pub use processor::{Passthrough, Processor};

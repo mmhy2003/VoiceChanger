@@ -46,9 +46,12 @@ pub fn banner_text(
     processor_error: Option<&str>,
 ) -> Option<String> {
     let device = |which| match which {
-        Endpoint::Input => ("input", sel.input.as_str()),
-        Endpoint::Cable => ("cable output", sel.cable.as_str()),
-        Endpoint::Monitor => ("monitor", sel.monitor.as_deref().unwrap_or_default()),
+        Endpoint::Input => ("input", sel.input.name.as_str()),
+        Endpoint::Cable => ("cable output", sel.cable.name.as_str()),
+        Endpoint::Monitor => (
+            "monitor",
+            sel.monitor.as_ref().map_or("", |m| m.name.as_str()),
+        ),
     };
     match status {
         StreamStatus::Running => None,
@@ -446,6 +449,7 @@ impl eframe::App for VcApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vc_audio::DeviceRef;
 
     #[test]
     fn window_title_has_version() {
@@ -489,15 +493,22 @@ mod tests {
         );
         state.refresh_with(unplugged.clone());
         assert_eq!(state.devices, unplugged);
-        assert_eq!(state.selection.input, "Microphone (Realtek)");
+        assert_eq!(state.selection.input.name, "Microphone (Realtek)");
         assert_eq!(state.notes.len(), 1);
+    }
+
+    fn device(name: &str) -> DeviceRef {
+        DeviceRef {
+            id: format!("{{id}}.{name}"),
+            name: name.into(),
+        }
     }
 
     fn selection() -> Selection {
         Selection {
-            input: "USB Mic".into(),
-            cable: "CABLE Input (VB-Audio Virtual Cable)".into(),
-            monitor: Some("Headphones".into()),
+            input: device("USB Mic"),
+            cable: device("CABLE Input (VB-Audio Virtual Cable)"),
+            monitor: Some(device("Headphones")),
             monitor_enabled: true,
         }
     }

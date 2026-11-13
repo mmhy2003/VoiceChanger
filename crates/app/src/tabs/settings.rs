@@ -22,10 +22,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
             ui.label("Input");
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt("input")
-                    .selected_text(name_or_none(&sel.input))
+                    .selected_text(name_or_none(&sel.input.name))
                     .show_ui(ui, |ui| {
-                        for name in &devices.inputs {
-                            ui.selectable_value(&mut sel.input, name.clone(), name);
+                        for d in &devices.inputs {
+                            if ui
+                                .selectable_label(sel.input.same(&d.into()), &d.name)
+                                .clicked()
+                            {
+                                sel.input = d.into();
+                            }
                         }
                     });
                 if let Some(level) = input_level {
@@ -36,10 +41,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
 
             ui.label("Cable output");
             egui::ComboBox::from_id_salt("cable")
-                .selected_text(output_label(&sel.cable))
+                .selected_text(output_label(&sel.cable.name))
                 .show_ui(ui, |ui| {
-                    for name in &devices.outputs {
-                        ui.selectable_value(&mut sel.cable, name.clone(), output_label(name));
+                    for d in &devices.outputs {
+                        let label = output_label(&d.name);
+                        if ui
+                            .selectable_label(sel.cable.same(&d.into()), label)
+                            .clicked()
+                        {
+                            sel.cable = d.into();
+                        }
                     }
                 });
             ui.end_row();
@@ -49,10 +60,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
                 ui.checkbox(&mut sel.monitor_enabled, "Monitor (hear yourself)");
                 ui.add_enabled_ui(sel.monitor_enabled, |ui| {
                     egui::ComboBox::from_id_salt("monitor")
-                        .selected_text(name_or_none(sel.monitor.as_deref().unwrap_or_default()))
+                        .selected_text(name_or_none(
+                            sel.monitor.as_ref().map_or("", |m| m.name.as_str()),
+                        ))
                         .show_ui(ui, |ui| {
-                            for name in &devices.outputs {
-                                ui.selectable_value(&mut sel.monitor, Some(name.clone()), name);
+                            for d in &devices.outputs {
+                                let selected =
+                                    sel.monitor.as_ref().is_some_and(|m| m.same(&d.into()));
+                                if ui.selectable_label(selected, &d.name).clicked() {
+                                    sel.monitor = Some(d.into());
+                                }
                             }
                         });
                     ui.add(

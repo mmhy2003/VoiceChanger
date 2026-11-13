@@ -1,19 +1,21 @@
-//! Processing worker: downmix to mono, resample per output, monitor gain and level meters.
+//! Processing worker: downmix to mono, gains, the processor, resample per output, monitor gain
+//! and level meters.
 //!
 //! Every buffer is allocated in `State::new` or before the loop in `spawn`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ringbuf::traits::{Consumer, Observer};
 use ringbuf::{HeapCons, HeapProd};
 use rubato::{FftFixedIn, Resampler};
 
 use crate::meter::measure;
+use crate::processor::Processor;
 use crate::ring::push_output;
-use crate::shared::Shared;
+use crate::shared::{Shared, StreamStatus};
 
 /// Average the channels of an interleaved buffer into `out` (cleared first). channels >= 1.
 /// A trailing partial frame is ignored.
@@ -50,47 +52,58 @@ pub struct OutputConfig {
     pub rate: u32,
 }
 
-/// Input format and outputs of the worker.
+/// Input format, processor rate and outputs of the worker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerConfig {
     /// Sample rate of the input device.
     pub in_rate: u32,
     /// Channel count of the interleaved input.
     pub in_channels: usize,
+    /// Sample rate of the processor's output (`Processor::out_rate`).
+    pub proc_rate: u32,
     /// Outputs, in the order of `State::output` indices.
     pub outputs: Vec<OutputConfig>,
 }
 
 struct OutputPath {
     kind: OutputKind,
-    resampler: Option<FftFixedIn<f32>>, // None when rate == in_rate
-    pending: Vec<f32>,                  // mono input waiting for a full resampler chunk
+    resampler: Option<FftFixedIn<f32>>, // None when rate == proc_rate
+    pending: Vec<f32>,                  // processed samples waiting for a full resampler chunk
     chunk_out: Vec<Vec<f32>>,           // [1][output_frames_max()]
-    ready: Vec<f32>,                    // processed mono samples from the last process_block
+    ready: Vec<f32>,                    // output samples from the last process_block
 }
 
-/// Worker state: preallocated buffers and one resampler per output that needs one.
+/// Worker state: the processor, preallocated buffers and one resampler per output that needs one.
 pub struct State {
     in_rate: usize,
     in_channels: usize,
     mono: Vec<f32>,
+    processed: Vec<f32>,
+    processor: Box<dyn Processor>,
+    failed: bool,
+    last_process: Duration,
     paths: Vec<OutputPath>,
 }
 
 impl State {
-    /// All buffers preallocated (capacities: mono/pending = in_rate, ready = out rate).
-    /// Construction errors are returned as their Display string.
-    pub fn new(cfg: &WorkerConfig) -> Result<State, String> {
+    /// All buffers preallocated (capacities: mono = in_rate, processed/pending = 2 * proc_rate,
+    /// ready = 2 * out rate). Outputs are resampled from `proc_rate`. On a construction error the
+    /// processor comes back with the error's Display string.
+    pub fn new(
+        cfg: &WorkerConfig,
+        processor: Box<dyn Processor>,
+    ) -> Result<State, (String, Box<dyn Processor>)> {
         let in_rate = cfg.in_rate as usize;
+        let proc_rate = cfg.proc_rate as usize;
         let paths = cfg
             .outputs
             .iter()
             .map(|out| {
-                let resampler = if out.rate == cfg.in_rate {
+                let resampler = if out.rate == cfg.proc_rate {
                     None
                 } else {
                     Some(
-                        FftFixedIn::<f32>::new(in_rate, out.rate as usize, in_rate / 100, 1, 1)
+                        FftFixedIn::<f32>::new(proc_rate, out.rate as usize, proc_rate / 100, 1, 1)
                             .map_err(|e| e.to_string())?,
                     )
                 };
@@ -100,18 +113,50 @@ impl State {
                 Ok(OutputPath {
                     kind: out.kind,
                     resampler,
-                    pending: Vec::with_capacity(in_rate),
+                    pending: Vec::with_capacity(2 * proc_rate),
                     chunk_out,
-                    ready: Vec::with_capacity(out.rate as usize),
+                    ready: Vec::with_capacity(2 * out.rate as usize),
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, String>>();
+        let paths = match paths {
+            Ok(paths) => paths,
+            Err(e) => return Err((e, processor)),
+        };
         Ok(State {
             in_rate,
             in_channels: cfg.in_channels.max(1),
             mono: Vec::with_capacity(in_rate),
+            processed: Vec::with_capacity(2 * proc_rate),
+            processor,
+            failed: false,
+            last_process: Duration::ZERO,
             paths,
         })
+    }
+
+    /// Prepares the processor for the input rate; a failure is handled like a `process` error.
+    pub fn prepare(&mut self, shared: &Shared) {
+        if let Err(e) = self.processor.prepare(self.in_rate as u32) {
+            self.fail(shared, e);
+        }
+    }
+
+    /// Stops calling the processor, logs why and reports `ProcessorFailed`.
+    fn fail(&mut self, shared: &Shared, e: String) {
+        tracing::error!(reason = %e, "voice processor failed");
+        shared.report(StreamStatus::ProcessorFailed);
+        self.failed = true;
+    }
+
+    /// Gives the processor back (the worker thread returns it when it stops).
+    pub fn into_processor(self) -> Box<dyn Processor> {
+        self.processor
+    }
+
+    /// How long the last `Processor::process` call took.
+    pub fn last_process(&self) -> Duration {
+        self.last_process
     }
 
     /// Processed samples of output `index` (same order as the config's outputs) from the last
@@ -126,15 +171,30 @@ impl State {
     }
 }
 
-/// Processes one interleaved input block into every output's `ready` buffer and updates the
-/// input and output meters.
+/// Processes one interleaved input block: downmix, input gain and meter, the processor (skipped
+/// once it failed), output gain, then every output's `ready` buffer and the output meter.
 pub fn process_block(state: &mut State, interleaved: &[f32], shared: &Shared) {
     downmix(interleaved, state.in_channels, &mut state.mono);
+    let input_gain = shared.input_gain();
+    state.mono.iter_mut().for_each(|s| *s *= input_gain);
     shared.input_meter.store(measure(&state.mono));
+
+    state.processed.clear();
+    if !state.failed {
+        let started = Instant::now();
+        let result = state.processor.process(&state.mono, &mut state.processed);
+        state.last_process = started.elapsed();
+        if let Err(e) = result {
+            state.fail(shared, e);
+            state.processed.clear();
+        }
+    }
+    let output_gain = shared.output_gain();
+    state.processed.iter_mut().for_each(|s| *s *= output_gain);
 
     for path in &mut state.paths {
         path.ready.clear();
-        path.pending.extend_from_slice(&state.mono);
+        path.pending.extend_from_slice(&state.processed);
         match &mut path.resampler {
             None => {
                 path.ready.extend_from_slice(&path.pending);
@@ -166,7 +226,8 @@ pub fn process_block(state: &mut State, interleaved: &[f32], shared: &Shared) {
 }
 
 /// Spawns thread "vc-audio-worker". `outputs[i]` feeds `state.output(i)`; `max_backlogs[i]` is
-/// that output's backlog limit in samples. Runs until `stop` is true.
+/// that output's backlog limit in samples. Prepares the processor, skips the input queued
+/// meanwhile, then runs until `stop` is true and returns the processor.
 pub fn spawn(
     mut state: State,
     mut input: HeapCons<f32>,
@@ -174,10 +235,12 @@ pub fn spawn(
     max_backlogs: Vec<usize>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
-) -> std::io::Result<JoinHandle<()>> {
+) -> std::io::Result<JoinHandle<Box<dyn Processor>>> {
     thread::Builder::new()
         .name("vc-audio-worker".into())
         .spawn(move || {
+            state.prepare(&shared);
+            input.skip(input.occupied_len());
             let ch = state.in_channels;
             let mut scratch = vec![0.0f32; ch * (state.in_rate / 50).max(1)];
             while !stop.load(Relaxed) {
@@ -192,12 +255,14 @@ pub fn spawn(
                     push_output(out, state.output(i), max_backlog, &shared);
                 }
             }
+            state.into_processor()
         })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     use std::time::{Duration, Instant};
@@ -205,17 +270,77 @@ mod tests {
     use ringbuf::traits::{Consumer, Observer, Producer};
 
     use crate::meter::measure;
+    use crate::processor::{Passthrough, Processor};
     use crate::ring::ring;
-    use crate::shared::Shared;
+    use crate::shared::{Shared, StreamStatus};
 
     fn cfg(in_rate: u32, in_channels: usize, outputs: &[(OutputKind, u32)]) -> WorkerConfig {
         WorkerConfig {
             in_rate,
             in_channels,
+            proc_rate: in_rate,
             outputs: outputs
                 .iter()
                 .map(|&(kind, rate)| OutputConfig { kind, rate })
                 .collect(),
+        }
+    }
+
+    /// Passthrough state for `cfg` (processor rate = input rate).
+    fn passthrough(cfg: &WorkerConfig) -> State {
+        State::new(cfg, Box::new(Passthrough::new(cfg.in_rate)))
+            .map_err(|(e, _)| e)
+            .unwrap()
+    }
+
+    /// Repeats every sample `factor` times, declares `rate`; fails every call when `fail`,
+    /// and `prepare` fails when `fail_prepare`.
+    struct Fake {
+        rate: u32,
+        factor: usize,
+        fail: bool,
+        fail_prepare: bool,
+        calls: usize,
+    }
+
+    impl Fake {
+        fn new(rate: u32, factor: usize) -> Self {
+            Fake {
+                rate,
+                factor,
+                fail: false,
+                fail_prepare: false,
+                calls: 0,
+            }
+        }
+    }
+
+    impl Processor for Fake {
+        fn out_rate(&self) -> u32 {
+            self.rate
+        }
+
+        fn delay(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        fn prepare(&mut self, _in_rate: u32) -> Result<(), String> {
+            if self.fail_prepare {
+                Err("no model".into())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), String> {
+            self.calls += 1;
+            if self.fail {
+                return Err("inference failed".into());
+            }
+            for &s in input {
+                out.extend(std::iter::repeat_n(s, self.factor));
+            }
+            Ok(())
         }
     }
 
@@ -267,7 +392,7 @@ mod tests {
 
     #[test]
     fn same_rate_passthrough() {
-        let mut state = State::new(&cfg(48_000, 1, &[(OutputKind::Cable, 48_000)])).unwrap();
+        let mut state = passthrough(&cfg(48_000, 1, &[(OutputKind::Cable, 48_000)]));
         let shared = Shared::new();
         let input = sine(48_000, 440.0, 0.7, 480);
         process_block(&mut state, &input, &shared);
@@ -277,7 +402,7 @@ mod tests {
 
     #[test]
     fn resample_44k1_to_48k_length_and_sine() {
-        let mut state = State::new(&cfg(44_100, 2, &[(OutputKind::Cable, 48_000)])).unwrap();
+        let mut state = passthrough(&cfg(44_100, 2, &[(OutputKind::Cable, 48_000)]));
         let input = sine(44_100, 1000.0, 0.5, 44_100);
         let out = &run(&mut state, &input, 2, 441)[0];
 
@@ -296,12 +421,11 @@ mod tests {
 
     #[test]
     fn monitor_gain_applied() {
-        let mut state = State::new(&cfg(
+        let mut state = passthrough(&cfg(
             48_000,
             1,
             &[(OutputKind::Cable, 48_000), (OutputKind::Monitor, 48_000)],
-        ))
-        .unwrap();
+        ));
         let shared = Shared::new();
         shared.set_monitor_gain(0.5);
         process_block(&mut state, &[0.8; 480], &shared);
@@ -312,12 +436,11 @@ mod tests {
 
     #[test]
     fn two_output_rates() {
-        let mut state = State::new(&cfg(
+        let mut state = passthrough(&cfg(
             44_100,
             1,
             &[(OutputKind::Cable, 48_000), (OutputKind::Monitor, 44_100)],
-        ))
-        .unwrap();
+        ));
         let input = sine(44_100, 1000.0, 0.5, 44_100);
         let out = run(&mut state, &input, 1, 441);
         assert!(out[0].len().abs_diff(48_000) <= 960, "len {}", out[0].len());
@@ -326,11 +449,11 @@ mod tests {
 
     #[test]
     fn worker_thread_moves_samples_and_stops() {
-        let state = State::new(&cfg(48_000, 1, &[(OutputKind::Cable, 48_000)])).unwrap();
+        let state = passthrough(&cfg(48_000, 1, &[(OutputKind::Cable, 48_000)]));
         let (mut in_prod, in_cons) = ring(48_000);
         let (out_prod, mut out_cons) = ring(48_000);
         let input = sine(48_000, 440.0, 0.5, 4800);
-        assert_eq!(in_prod.push_slice(&input), input.len());
+        const MARKER: f32 = 9.0;
 
         let shared = Arc::new(Shared::new());
         let stop = Arc::new(AtomicBool::new(false));
@@ -344,14 +467,124 @@ mod tests {
         )
         .unwrap();
 
+        // The backlog queued before `prepare` is skipped: feed markers until one comes out,
+        // so the input that follows is processed in full.
+        let mut got = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(1);
-        while out_cons.occupied_len() < input.len() && Instant::now() < deadline {
+        while got.is_empty() && Instant::now() < deadline {
+            in_prod.push_slice(&[MARKER; 480]);
             std::thread::sleep(Duration::from_millis(5));
+            got.extend(out_cons.pop_iter());
+        }
+        assert_eq!(in_prod.push_slice(&input), input.len());
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while got.iter().filter(|&&s| s != MARKER).count() < input.len()
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+            got.extend(out_cons.pop_iter());
         }
         stop.store(true, Relaxed);
         handle.join().unwrap();
 
-        let got: Vec<f32> = out_cons.pop_iter().collect();
+        let got: Vec<f32> = got.into_iter().skip_while(|&s| s == MARKER).collect();
         assert_eq!(got, input);
+    }
+
+    #[test]
+    fn processor_out_rate_is_resampled() {
+        let mut c = cfg(24_000, 1, &[(OutputKind::Cable, 48_000)]);
+        c.proc_rate = 48_000;
+        let mut state = State::new(&c, Box::new(Fake::new(48_000, 2)))
+            .map_err(|(e, _)| e)
+            .unwrap();
+        assert!(state.paths[0].resampler.is_none());
+        let shared = Shared::new();
+        process_block(&mut state, &[0.25; 240], &shared);
+        assert_eq!(state.output(0), &[0.25; 480][..]);
+    }
+
+    #[test]
+    fn gains_applied_and_metered() {
+        let mut state = passthrough(&cfg(48_000, 1, &[(OutputKind::Cable, 48_000)]));
+        let shared = Shared::new();
+        shared.set_input_gain(2.0);
+        shared.set_output_gain(0.5);
+        process_block(&mut state, &[0.5; 480], &shared);
+        assert_eq!(shared.input_meter.load().peak, 1.0);
+        assert_eq!(state.output(0), &[0.5; 480][..]);
+        assert_eq!(shared.output_meter.load().peak, 0.5);
+    }
+
+    #[test]
+    fn processor_error_reports_and_stops_calling() {
+        let mut fake = Fake::new(48_000, 1);
+        fake.fail = true;
+        let c = cfg(
+            48_000,
+            1,
+            &[(OutputKind::Cable, 48_000), (OutputKind::Monitor, 48_000)],
+        );
+        let mut state = State::new(&c, Box::new(fake)).map_err(|(e, _)| e).unwrap();
+        let shared = Shared::new();
+        for _ in 0..2 {
+            process_block(&mut state, &[0.5; 480], &shared);
+            assert!(state.output(0).is_empty());
+            assert!(state.output(1).is_empty());
+        }
+        assert_eq!(shared.status(), StreamStatus::ProcessorFailed);
+        let fake = (state.into_processor() as Box<dyn Any>)
+            .downcast::<Fake>()
+            .unwrap();
+        assert_eq!(fake.calls, 1);
+    }
+
+    #[test]
+    fn prepare_error_reports() {
+        let mut fake = Fake::new(48_000, 1);
+        fake.fail_prepare = true;
+        let c = cfg(48_000, 1, &[(OutputKind::Cable, 48_000)]);
+        let mut state = State::new(&c, Box::new(fake)).map_err(|(e, _)| e).unwrap();
+        let shared = Shared::new();
+        state.prepare(&shared);
+        assert_eq!(shared.status(), StreamStatus::ProcessorFailed);
+        process_block(&mut state, &[0.5; 480], &shared);
+        assert!(state.output(0).is_empty());
+        let fake = (state.into_processor() as Box<dyn Any>)
+            .downcast::<Fake>()
+            .unwrap();
+        assert_eq!(fake.calls, 0);
+    }
+
+    #[test]
+    fn worker_returns_processor() {
+        let c = cfg(48_000, 1, &[(OutputKind::Cable, 48_000)]);
+        let state = State::new(&c, Box::new(Fake::new(48_000, 1)))
+            .map_err(|(e, _)| e)
+            .unwrap();
+        let (mut in_prod, in_cons) = ring(48_000);
+        let (out_prod, out_cons) = ring(48_000);
+        let shared = Arc::new(Shared::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = spawn(
+            state,
+            in_cons,
+            vec![out_prod],
+            vec![48_000 / 5],
+            shared,
+            stop.clone(),
+        )
+        .unwrap();
+        // Pushed after spawn: anything queued before `prepare` finishes is skipped.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while out_cons.occupied_len() == 0 && Instant::now() < deadline {
+            in_prod.push_slice(&[0.1; 480]);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop.store(true, Relaxed);
+        let p = handle.join().unwrap();
+        let fake = (p as Box<dyn Any>).downcast::<Fake>().unwrap();
+        assert!(fake.calls > 0);
     }
 }

@@ -157,15 +157,18 @@ impl VcApp {
     /// Starts audio with the current selection; on failure, the banner says why.
     pub(crate) fn start(&mut self) {
         self.banner = None;
-        match AudioSession::start(&self.state.selection, self.shared.clone()) {
+        let processor = Box::new(vc_audio::Passthrough::new(48_000));
+        match AudioSession::start(&self.state.selection, self.shared.clone(), processor) {
             Ok(session) => self.session = Some(session),
-            Err(e) => self.banner = Some(format!("Could not start audio: {e}")),
+            Err((e, _)) => self.banner = Some(format!("Could not start audio: {e}")),
         }
     }
 
     /// Stops audio and clears the meters.
     pub(crate) fn stop(&mut self) {
-        self.session = None;
+        if let Some(s) = self.session.take() {
+            let _ = s.stop();
+        }
         self.input_meter.reset();
         self.output_meter.reset();
     }

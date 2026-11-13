@@ -23,6 +23,19 @@ pub struct Entry {
     pub dest: String,
     #[serde(default)]
     pub extract: Option<String>,
+    /// The licence file inside a runtime package, copied to
+    /// `vendor/licences/<dest file stem>.txt`.
+    #[serde(default)]
+    pub licence_extract: Option<String>,
+}
+
+impl Entry {
+    /// Where `licence_extract` lands under `vendor/`, named after `dest`.
+    pub fn licence_dest(&self) -> Option<String> {
+        self.licence_extract.as_ref()?;
+        let stem = std::path::Path::new(&self.dest).file_stem()?;
+        Some(format!("licences/{}.txt", stem.to_string_lossy()))
+    }
 }
 
 /// Parses and validates a manifest.
@@ -30,11 +43,23 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     let manifest: Manifest = toml::from_str(text).map_err(|e| e.to_string())?;
     for entry in &manifest.model {
         validate(entry)?;
+        if entry.licence_extract.is_some() {
+            return Err(format!(
+                "{}: only runtime entries can have `licence_extract`",
+                entry.name
+            ));
+        }
     }
     for entry in &manifest.runtime {
         validate(entry)?;
         if entry.extract.as_deref().is_none_or(str::is_empty) {
             return Err(format!("{}: runtime entries need `extract`", entry.name));
+        }
+        if entry.licence_extract.as_deref() == Some("") {
+            return Err(format!(
+                "{}: `licence_extract` must not be empty",
+                entry.name
+            ));
         }
     }
     Ok(manifest)
@@ -90,6 +115,40 @@ mod tests {
         assert_eq!(m.runtime.len(), 1);
         assert_eq!(m.runtime[0].extract.as_deref(), Some("lib/r.dll"));
         assert_eq!(m.runtime[0].dest, "runtime/r.dll");
+        assert_eq!(m.runtime[0].licence_extract, None);
+        assert_eq!(m.runtime[0].licence_dest(), None);
+    }
+
+    fn runtime_with(extra: &str) -> String {
+        format!(
+            "[[runtime]]\nname = \"r\"\nurl = \"https://example.com/r.nupkg\"\nsha256 = \"{SHA}\"\nlicence = \"MIT\"\nextract = \"lib/r.dll\"\ndest = \"runtime/r.dll\"\n{extra}\n"
+        )
+    }
+
+    #[test]
+    fn parses_licence_extract() {
+        let m = parse(&runtime_with("licence_extract = \"LICENSE.txt\"")).unwrap();
+        assert_eq!(m.runtime[0].licence_extract.as_deref(), Some("LICENSE.txt"));
+        assert_eq!(
+            m.runtime[0].licence_dest().as_deref(),
+            Some("licences/r.txt")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_licence_extract() {
+        let err = parse(&runtime_with("licence_extract = \"\"")).unwrap_err();
+        assert!(err.contains("licence_extract"), "{err}");
+    }
+
+    #[test]
+    fn model_rejects_licence_extract() {
+        let text = format!(
+            "{}licence_extract = \"LICENSE\"\n",
+            model("https://example.com/m.onnx", SHA, "models/m.onnx")
+        );
+        let err = parse(&text).unwrap_err();
+        assert!(err.contains("licence_extract"), "{err}");
     }
 
     #[test]
@@ -135,6 +194,13 @@ mod tests {
         let m = parse(include_str!("../../assets/base-models.toml")).unwrap();
         assert_eq!(m.model.len(), 2);
         assert_eq!(m.runtime.len(), 2);
+        let mut dests = std::collections::HashSet::new();
+        for entry in &m.runtime {
+            let dest = entry
+                .licence_dest()
+                .unwrap_or_else(|| panic!("{}: no licence_extract", entry.name));
+            assert!(dests.insert(dest), "{}: duplicate licence dest", entry.name);
+        }
     }
 
     #[test]

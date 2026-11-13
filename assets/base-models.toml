@@ -1,5 +1,6 @@
 # Base models and ONNX Runtime binaries fetched by `cargo xtask fetch-models`.
-# Files land in vendor/ (gitignored). Never commit them. URLs are pinned to
+# Files land in vendor/ (gitignored); a runtime's `licence_extract` is copied
+# to vendor/licences/<dest file stem>.txt. Never commit them. URLs are pinned to
 # immutable revisions; every download is checked against its SHA-256.
 
 [[model]]
@@ -23,6 +24,7 @@ sha256 = "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681"
 licence = "MIT (Microsoft ONNX Runtime)"
 extract = "runtimes/win-x64/native/onnxruntime.dll"
 dest = "runtime/onnxruntime.dll"
+licence_extract = "LICENSE"
 
 [[runtime]]
 name = "DirectML 1.15.4"
@@ -31,3 +33,4 @@ sha256 = "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9"
 licence = "Microsoft DirectML licence (redistributable, see LICENSE.txt in the package)"
 extract = "bin/x64-win/DirectML.dll"
 dest = "runtime/DirectML.dll"
+licence_extract = "LICENSE.txt"

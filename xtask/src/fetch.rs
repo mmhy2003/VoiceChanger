@@ -6,7 +6,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::manifest::Manifest;
+use crate::manifest::{Entry, Manifest};
 
 /// The SHA-256 of a file, as lowercase hex.
 pub fn sha256_file(path: &Path) -> io::Result<String> {
@@ -89,8 +89,18 @@ pub fn fetch_all(root: &Path, manifest: &Manifest) -> Result<(), String> {
         let file_name = entry.url.rsplit('/').next().unwrap_or_default();
         let package = vendor.join("cache").join(file_name);
         ensure(&agent, &entry.name, &entry.url, &entry.sha256, &package)?;
-        let inner = entry.extract.as_deref().unwrap_or_default();
-        extract_from_zip(&package, inner, &vendor.join(&entry.dest))?;
+        extract_runtime(&package, entry, &vendor)?;
+    }
+    Ok(())
+}
+
+/// Copies a runtime's DLL (`extract` to `dest`) and, when set, its licence
+/// (`licence_extract` to `licence_dest()`) out of `package` into `vendor`.
+pub fn extract_runtime(package: &Path, entry: &Entry, vendor: &Path) -> Result<(), String> {
+    let inner = entry.extract.as_deref().unwrap_or_default();
+    extract_from_zip(package, inner, &vendor.join(&entry.dest))?;
+    if let (Some(inner), Some(dest)) = (entry.licence_extract.as_deref(), entry.licence_dest()) {
+        extract_from_zip(package, inner, &vendor.join(dest))?;
     }
     Ok(())
 }
@@ -166,20 +176,58 @@ mod tests {
         assert!(!path.exists());
     }
 
-    fn write_zip(name: &str) -> PathBuf {
+    fn write_zip(name: &str, files: &[(&str, &[u8])]) -> PathBuf {
         let path = temp(name);
         let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        zip.start_file("a/b.dll", options).unwrap();
-        zip.write_all(b"hi").unwrap();
+        for (inner, contents) in files {
+            zip.start_file(*inner, options).unwrap();
+            zip.write_all(contents).unwrap();
+        }
         zip.finish().unwrap();
         path
     }
 
+    fn runtime_entry(licence_extract: &str) -> Entry {
+        Entry {
+            name: "b".into(),
+            url: "https://example.com/b.nupkg".into(),
+            sha256: ABC.into(),
+            licence: "MIT".into(),
+            dest: "runtime/b.dll".into(),
+            extract: Some("a/b.dll".into()),
+            licence_extract: Some(licence_extract.into()),
+        }
+    }
+
+    #[test]
+    fn extracts_runtime_and_licence() {
+        let zip = write_zip(
+            "runtime.zip",
+            &[("a/b.dll", b"hi"), ("LICENSE.txt", b"lic")],
+        );
+        let vendor = temp("runtime-vendor");
+        extract_runtime(&zip, &runtime_entry("LICENSE.txt"), &vendor).unwrap();
+        assert_eq!(fs::read(vendor.join("runtime/b.dll")).unwrap(), b"hi");
+        assert_eq!(fs::read(vendor.join("licences/b.txt")).unwrap(), b"lic");
+        fs::remove_file(zip).unwrap();
+        fs::remove_dir_all(vendor).unwrap();
+    }
+
+    #[test]
+    fn extract_runtime_missing_licence_errors() {
+        let zip = write_zip("runtime-nolic.zip", &[("a/b.dll", b"hi")]);
+        let vendor = temp("runtime-nolic-vendor");
+        let err = extract_runtime(&zip, &runtime_entry("LICENSE.txt"), &vendor).unwrap_err();
+        assert!(err.contains("LICENSE.txt"), "{err}");
+        fs::remove_file(zip).unwrap();
+        let _ = fs::remove_dir_all(vendor);
+    }
+
     #[test]
     fn extracts_inner_file() {
-        let zip = write_zip("extract.zip");
+        let zip = write_zip("extract.zip", &[("a/b.dll", b"hi")]);
         let dest = temp("extract-out").join("sub/b.dll");
         extract_from_zip(&zip, "a/b.dll", &dest).unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"hi");
@@ -189,7 +237,7 @@ mod tests {
 
     #[test]
     fn extract_missing_inner_errors() {
-        let zip = write_zip("missing.zip");
+        let zip = write_zip("missing.zip", &[("a/b.dll", b"hi")]);
         let dest = temp("missing-out.dll");
         let err = extract_from_zip(&zip, "a/c.dll", &dest).unwrap_err();
         assert!(err.contains("a/c.dll"), "{err}");

@@ -2,6 +2,7 @@
 //! VoiceChanger desktop app.
 
 mod app;
+mod model;
 mod tabs;
 mod widgets;
 

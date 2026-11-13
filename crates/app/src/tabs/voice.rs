@@ -1,4 +1,4 @@
-//! Voice tab: Start/Stop, level meters, status and the device-loss banner.
+//! Voice tab: model picker, Start/Stop, level meters, status and the device-loss banner.
 
 use eframe::egui;
 use vc_audio::{AudioSession, SessionInfo, start_blocker};
@@ -19,6 +19,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
             app.banner = None;
         }
     }
+
+    ui.horizontal(|ui| {
+        ui.label(app.model.label());
+        let busy = app.is_running() || app.model.is_loading() || app.pick_rx.is_some();
+        if ui.add_enabled(!busy, egui::Button::new("Model…")).clicked() {
+            app.pick_model();
+        }
+    });
 
     if app.is_running() {
         if ui.button("■ Stop").clicked() {
@@ -56,7 +64,7 @@ pub fn status_line(info: Option<SessionInfo>) -> String {
 }
 
 /// 48000 -> "48 kHz", 44100 -> "44.1 kHz".
-fn khz(rate: u32) -> String {
+pub(crate) fn khz(rate: u32) -> String {
     let text = format!("{:.1}", f64::from(rate) / 1000.0);
     format!("{} kHz", text.strip_suffix(".0").unwrap_or(&text))
 }

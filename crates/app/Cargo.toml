@@ -16,4 +16,6 @@ workspace = true
 
 [dependencies]
 eframe = "0.32"
+rfd = { version = "0.17", default-features = false }
 vc-audio = { path = "../audio" }
+vc-engine = { path = "../engine" }

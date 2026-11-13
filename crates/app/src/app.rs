@@ -1,6 +1,8 @@
 //! Top-level app state and the tab bar.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use eframe::egui;
@@ -8,7 +10,9 @@ use vc_audio::{
     AudioSession, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Selection, Shared, StreamStatus,
     db_to_gain, list_devices,
 };
+use vc_engine::{Pipeline, Provider, StreamSettings};
 
+use crate::model::{self, ModelSlot};
 use crate::tabs;
 use crate::widgets::MeterState;
 
@@ -90,6 +94,39 @@ impl Tab {
     }
 }
 
+/// Execution provider picked in Settings → Performance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "the Performance settings pick Cuda and Cpu from step 11 on"
+)]
+pub enum ProviderChoice {
+    #[default]
+    DirectMl,
+    Cuda,
+    Cpu,
+}
+
+/// Settings → Performance: where the model runs and how the stream is cut into blocks.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PerfSettings {
+    pub provider: ProviderChoice,
+    /// GPU index for DirectML and CUDA.
+    pub gpu: i32,
+    pub stream: StreamSettings,
+}
+
+impl PerfSettings {
+    /// The engine provider for this choice and GPU.
+    pub fn provider(&self) -> Provider {
+        match self.provider {
+            ProviderChoice::DirectMl => Provider::DirectMl { device: self.gpu },
+            ProviderChoice::Cuda => Provider::Cuda { device: self.gpu },
+            ProviderChoice::Cpu => Provider::Cpu,
+        }
+    }
+}
+
 /// Device list and the user's choices, kept apart from the UI so it can be tested without hardware.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
@@ -99,6 +136,7 @@ pub struct AppState {
     pub monitor_db: f32,
     /// Messages from the last Refresh, e.g. a selected device that disappeared.
     pub notes: Vec<String>,
+    pub perf: PerfSettings,
 }
 
 impl AppState {
@@ -109,6 +147,7 @@ impl AppState {
             devices,
             monitor_db: DEFAULT_MONITOR_DB,
             notes: Vec::new(),
+            perf: PerfSettings::default(),
         }
     }
 
@@ -130,6 +169,11 @@ pub struct VcApp {
     pub(crate) banner: Option<String>,
     pub(crate) input_meter: MeterState,
     pub(crate) output_meter: MeterState,
+    pub(crate) model: ModelSlot<Pipeline>,
+    /// The last model file chosen, reloaded when the provider changes.
+    pub(crate) model_path: Option<PathBuf>,
+    /// The open file picker's answer.
+    pub(crate) pick_rx: Option<Receiver<Option<PathBuf>>>,
 }
 
 impl VcApp {
@@ -142,6 +186,42 @@ impl VcApp {
             banner: None,
             input_meter: MeterState::default(),
             output_meter: MeterState::default(),
+            model: ModelSlot::default(),
+            model_path: None,
+            pick_rx: None,
+        }
+    }
+
+    /// Opens the model file picker; its answer is polled in `update`.
+    pub(crate) fn pick_model(&mut self) {
+        self.pick_rx = Some(model::pick_model());
+    }
+
+    /// Starts loading the model at `path` with the current Performance settings.
+    pub(crate) fn load_model(&mut self, path: PathBuf) {
+        let name = model::model_name(&path);
+        let perf = self.state.perf;
+        self.model = match model::spawn_load(path.clone(), perf.provider(), perf.stream) {
+            Ok(rx) => ModelSlot::loading(name, rx),
+            Err(e) => ModelSlot::Failed(e.to_string()),
+        };
+        self.model_path = Some(path);
+    }
+
+    /// Picks up the file picker's answer and the loader's result.
+    fn poll_model(&mut self) {
+        if let Some(rx) = &self.pick_rx {
+            match rx.try_recv() {
+                Ok(Some(path)) => {
+                    self.pick_rx = None;
+                    self.load_model(path);
+                }
+                Ok(None) | Err(TryRecvError::Disconnected) => self.pick_rx = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(Err(msg)) = self.model.poll() {
+            self.banner = Some(format!("Could not load the model: {msg}"));
         }
     }
 
@@ -189,6 +269,7 @@ impl VcApp {
 impl eframe::App for VcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_status();
+        self.poll_model();
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
         if self.is_running() {
@@ -221,6 +302,8 @@ impl eframe::App for VcApp {
 
         if self.is_running() {
             ctx.request_repaint_after(Duration::from_millis(33));
+        } else if self.model.is_loading() || self.pick_rx.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
 }
@@ -339,6 +422,21 @@ mod tests {
                  Press Start to try again."
             )
         );
+    }
+
+    #[test]
+    fn perf_provider_mapping() {
+        let mut perf = PerfSettings::default();
+        assert_eq!(perf.provider, ProviderChoice::DirectMl);
+        assert_eq!(perf.gpu, 0);
+        assert_eq!(perf.stream, StreamSettings::default());
+        assert_eq!(perf.provider(), Provider::DirectMl { device: 0 });
+        perf.gpu = 2;
+        assert_eq!(perf.provider(), Provider::DirectMl { device: 2 });
+        perf.provider = ProviderChoice::Cuda;
+        assert_eq!(perf.provider(), Provider::Cuda { device: 2 });
+        perf.provider = ProviderChoice::Cpu;
+        assert_eq!(perf.provider(), Provider::Cpu);
     }
 
     #[test]

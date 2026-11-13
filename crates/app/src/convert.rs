@@ -73,7 +73,7 @@ fn spawn<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Receive
 }
 
 /// The file name of `path`, for messages.
-fn file_name(path: &Path) -> String {
+pub fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())

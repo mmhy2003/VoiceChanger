@@ -3,10 +3,6 @@
 
 mod app;
 mod config;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into the Convert tab in the next step")
-)]
 mod convert;
 mod engine;
 mod files;

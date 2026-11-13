@@ -36,6 +36,21 @@ pub fn classify_drop(path: &Path) -> DropAction {
     }
 }
 
+/// Where a dropped file goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DropRoute {
+    Convert(PathBuf),
+    Library(PathBuf),
+}
+
+/// A `.pth` or `.zip` dropped on the Convert tab is converted; everything else goes to the library.
+pub fn route_drop(on_convert_tab: bool, path: &Path) -> DropRoute {
+    match classify_drop(path) {
+        DropAction::OfferConvert(path) if on_convert_tab => DropRoute::Convert(path),
+        _ => DropRoute::Library(path.to_path_buf()),
+    }
+}
+
 /// The file name of `path`, for messages.
 fn file_name(path: &Path) -> String {
     path.file_name()
@@ -409,6 +424,22 @@ mod tests {
         let ids = ["c", "a", "b", "a-2"].map(|id| Ok(id.to_string()));
         assert_eq!(drive(&mut imp, &mut library), ids);
         assert_eq!(library.ids(), ["c", "a", "b", "a-2"]);
+    }
+
+    #[test]
+    fn route_drop_cases() {
+        for name in [r"C:\m\voice.pth", r"C:\m\voice.zip"] {
+            let p = PathBuf::from(name);
+            assert_eq!(
+                route_drop(true, &p),
+                DropRoute::Convert(p.clone()),
+                "{name}"
+            );
+        }
+        let pth = PathBuf::from(r"C:\m\voice.pth");
+        assert_eq!(route_drop(false, &pth), DropRoute::Library(pth.clone()));
+        let onnx = PathBuf::from(r"C:\m\voice.onnx");
+        assert_eq!(route_drop(true, &onnx), DropRoute::Library(onnx.clone()));
     }
 
     #[test]

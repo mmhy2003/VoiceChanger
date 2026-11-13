@@ -92,27 +92,36 @@ begin
     or (Pos('virtual audio cable', Lower) > 0);
 end;
 
-{ True if an active render endpoint looks like a virtual cable. HKLM is readable without admin. }
+{ True if an active render endpoint looks like a virtual cable. HKLM is readable without admin.
+  installer\test-install.ps1 passes /CableRegistryKey=<HKCU subkey> to point the check at fake endpoints. }
 function VirtualCableInstalled: Boolean;
 var
+  Root: Integer;
+  Key: String;
   Endpoints: TArrayOfString;
   I: Integer;
   State: Cardinal;
   Props, Desc, Iface: String;
 begin
   Result := False;
-  if not RegGetSubkeyNames(HKLM, RenderKey, Endpoints) then
+  Root := HKLM;
+  Key := ExpandConstant('{param:CableRegistryKey|}');
+  if Key = '' then
+    Key := RenderKey
+  else
+    Root := HKCU;
+  if not RegGetSubkeyNames(Root, Key, Endpoints) then
     Exit;
   for I := 0 to GetArrayLength(Endpoints) - 1 do
   begin
-    if RegQueryDWordValue(HKLM, RenderKey + '\' + Endpoints[I], 'DeviceState', State)
+    if RegQueryDWordValue(Root, Key + '\' + Endpoints[I], 'DeviceState', State)
       and (State = DeviceStateActive) then
     begin
-      Props := RenderKey + '\' + Endpoints[I] + '\Properties';
+      Props := Key + '\' + Endpoints[I] + '\Properties';
       Desc := '';
       Iface := '';
-      RegQueryStringValue(HKLM, Props, DeviceDescValue, Desc);
-      RegQueryStringValue(HKLM, Props, InterfaceNameValue, Iface);
+      RegQueryStringValue(Root, Props, DeviceDescValue, Desc);
+      RegQueryStringValue(Root, Props, InterfaceNameValue, Iface);
       if IsVirtualCableName(Desc + ' (' + Iface + ')') then
       begin
         Result := True;
@@ -132,10 +141,34 @@ begin
   Result := not CableFound;
 end;
 
-{ Setup never touches user data; the uninstaller asks (default No) and a silent uninstall keeps it. }
+{ The [Run] entry is skipped in silent mode, so log the result for installer\test-install.ps1. }
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+  if NoVirtualCable then
+    Log('VoiceChanger: virtual cable not found')
+  else
+    Log('VoiceChanger: virtual cable found');
+end;
+
+{ /PURGEDATA on the uninstaller command line: delete user data without asking. }
+function PurgeDataRequested: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/PURGEDATA') = 0 then
+      Result := True;
+end;
+
+{ Setup never touches user data. The uninstaller asks (default No); a silent uninstall keeps it
+  unless /PURGEDATA is passed. }
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Roaming, Local: String;
+  Delete: Boolean;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
@@ -143,10 +176,14 @@ begin
   Local := ExpandConstant('{localappdata}\{#AppName}');
   if not (DirExists(Roaming) or DirExists(Local)) then
     Exit;
-  if UninstallSilent then
-    Exit;
-  if MsgBox('Also delete your voice models and settings?' + #13#10#13#10 + Roaming + #13#10 + Local,
-    mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+  if PurgeDataRequested then
+    Delete := True
+  else if UninstallSilent then
+    Delete := False
+  else
+    Delete := MsgBox('Also delete your voice models and settings?' + #13#10#13#10 + Roaming + #13#10 + Local,
+      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+  if Delete then
   begin
     DelTree(Roaming, True, True, True);
     DelTree(Local, True, True, True);

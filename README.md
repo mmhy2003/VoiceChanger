@@ -93,6 +93,8 @@ The ONNX types in `crates/convert/src/onnx/onnx.rs` are generated; regenerate th
 
 Releases are made by a release PR from `develop` into `main` (see [AGENTS.md](AGENTS.md)). When it is merged, `.github/workflows/release.yml` tags `vX.Y.Z` and publishes the GitHub Release with the installer and `SHA256SUMS.txt`.
 
+There is no manual test step. CI and the release workflow run `installer\test-install.ps1` on a clean Windows runner. It installs per user, upgrades from the latest release (keeping user data), runs `voicechanger.exe --self-test` on the bundled models, checks the VB-CABLE prompt against fake cable endpoints, and uninstalls with and without `/PURGEDATA`. The release is only tagged and published when it passes. Afterwards the workflow downloads the published installer and checks it against `SHA256SUMS.txt`. The runners have no GPU or audio devices, so DirectML and real audio are not covered. The script deletes `%APPDATA%\VoiceChanger`, so it refuses to run where VoiceChanger is installed or has data.
+
 To build the installer locally (needs Inno Setup 6.3+ and cargo-about):
 
     cargo build --release

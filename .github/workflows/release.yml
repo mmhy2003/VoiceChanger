@@ -116,6 +116,15 @@ jobs:
           github-artifact-id: ${{ steps.setup-unsigned.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: dist
+      - name: Previous release installer
+        id: previous
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/previous-installer.sh
+      - name: Installer test (install, upgrade, uninstall)
+        shell: pwsh
+        run: ./installer/test-install.ps1 -Setup "dist/Setup-VoiceChanger-$env:VERSION.exe" -Version $env:VERSION -FileVersion "$env:VERSION.0" -Previous '${{ steps.previous.outputs.path }}'
       - name: Checksums
         shell: pwsh
         run: |
@@ -163,3 +172,16 @@ jobs:
           gh release create "v$VERSION" --target "$GITHUB_SHA"
           --title "VoiceChanger $VERSION" --notes-file notes.md
           "dist/Setup-VoiceChanger-$VERSION.exe" dist/SHA256SUMS.txt
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "v$VERSION" --dir published
+          cd published
+          sha256sum -c SHA256SUMS.txt
+          latest=$(gh release view --json tagName -q .tagName)
+          if [ "$latest" != "v$VERSION" ]; then
+            echo "::error::Latest release is $latest, expected v$VERSION."
+            exit 1
+          fi

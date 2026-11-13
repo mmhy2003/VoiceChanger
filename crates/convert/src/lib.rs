@@ -8,6 +8,8 @@ pub mod pth;
 pub mod template;
 #[cfg(test)]
 mod testutil;
+#[cfg(feature = "validate")]
+pub mod validate;
 
 pub use error::ConvertError;
 
@@ -165,6 +167,10 @@ fn inspect_with(
     })
 }
 
+fn send(progress: &Sender<Progress>, stage: Stage, fraction: f32) {
+    let _ = progress.send(Progress { stage, fraction });
+}
+
 fn convert_with(
     i: &Inspection,
     bytes: Vec<u8>,
@@ -172,9 +178,25 @@ fn convert_with(
     cancel: &Cancel,
     progress: &Sender<Progress>,
 ) -> Result<Converted, ConvertError> {
-    let send = |stage, fraction| {
-        let _ = progress.send(Progress { stage, fraction });
-    };
+    let converted = build_with(i, bytes, templates, cancel, progress)?;
+    #[cfg(feature = "validate")]
+    {
+        send(progress, Stage::Check, 0.0);
+        validate::check(&converted.onnx)?;
+        send(progress, Stage::Check, 1.0);
+    }
+    Ok(converted)
+}
+
+/// The read and fill stages of [`convert_with`]: the filled model, not yet checked.
+fn build_with(
+    i: &Inspection,
+    bytes: Vec<u8>,
+    templates: &[Template],
+    cancel: &Cancel,
+    progress: &Sender<Progress>,
+) -> Result<Converted, ConvertError> {
+    let send = |stage, fraction| send(progress, stage, fraction);
 
     send(Stage::Read, 0.0);
     if sha256_hex(&bytes) != i.sha256 {
@@ -210,6 +232,10 @@ mod tests {
     use super::*;
     use crate::pickle::DType;
     use crate::testutil::{Fixture, TempDir, config_48k, rvc_pth, toy_template};
+    #[cfg(feature = "validate")]
+    use crate::testutil::{assets_or_skip, synthetic_pth};
+    #[cfg(feature = "validate")]
+    use vc_engine::assets::ORT_DLL;
 
     /// The toy template for the 40k fixture's config.
     fn toy_40k() -> Template {
@@ -230,13 +256,15 @@ mod tests {
         inspect_with(path, bytes, &[toy_40k()])
     }
 
+    /// Reads and fills like [`convert`], without validation: the toy
+    /// template has no graph to run.
     fn convert_toy(
         i: &Inspection,
         cancel: &Cancel,
         progress: &Sender<Progress>,
     ) -> Result<Converted, ConvertError> {
         let bytes = std::fs::read(&i.source).expect("read fixture");
-        convert_with(i, bytes, &[toy_40k()], cancel, progress)
+        build_with(i, bytes, &[toy_40k()], cancel, progress)
     }
 
     fn inspected(dir: &TempDir) -> Inspection {
@@ -360,6 +388,58 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let r = convert_toy(&i, &Cancel::new(), &tx);
         assert!(matches!(r, Err(ConvertError::Io(_))), "got {r:?}");
+    }
+
+    #[cfg(feature = "validate")]
+    #[test]
+    fn real_templates_fill_and_load() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        for t in templates() {
+            let file = &t.info.file;
+            let dir = TempDir::new(&format!("real-{file}"));
+            let path = dir.path().join("voice.pth");
+            std::fs::write(&path, synthetic_pth(t, 1)).expect("write pth");
+            let i = inspect(&path).expect("inspect");
+            let bytes = std::fs::read(&path).expect("read pth");
+            let (tx, _rx) = mpsc::channel();
+            let out = build_with(&i, bytes, templates(), &Cancel::new(), &tx).expect("fill");
+            let (audio, sr) = validate::synthetic_output(&out.onnx).expect("run");
+
+            assert_eq!(i.sample_rate, t.info.config.sr, "{file}");
+            assert_eq!(i.speakers, 1, "{file}");
+            assert_eq!(sr, t.info.config.sr, "{file}");
+            assert_eq!(
+                audio.len(),
+                validate::FRAMES * (sr as usize / 100),
+                "{file}"
+            );
+            assert!(audio.iter().all(|v| v.is_finite()), "{file}");
+        }
+    }
+
+    #[cfg(feature = "validate")]
+    #[test]
+    fn convert_checks_real_template() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        let t = &templates()[0];
+        let dir = TempDir::new("convert-checks");
+        let path = dir.path().join("voice.pth");
+        std::fs::write(&path, synthetic_pth(t, 1)).expect("write pth");
+        let i = inspect(&path).expect("inspect");
+        let (tx, rx) = mpsc::channel();
+        let out = convert(&i, &Cancel::new(), &tx).expect("convert");
+        assert_eq!(out.sample_rate, t.info.config.sr);
+        drop(tx);
+        let checks: Vec<f32> = rx
+            .iter()
+            .filter(|p| p.stage == Stage::Check)
+            .map(|p| p.fraction)
+            .collect();
+        assert_eq!(checks, [0.0, 1.0]);
     }
 
     #[test]

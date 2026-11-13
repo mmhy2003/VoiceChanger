@@ -1,5 +1,5 @@
 //! Test helpers: a pickle writer that emits protocol 2 as `torch.save` does,
-//! and a temporary folder removed on drop.
+//! a temporary folder removed on drop, fixtures and vendor asset gating.
 
 use std::path::{Path, PathBuf};
 
@@ -346,14 +346,21 @@ impl Fixture {
 /// RVC saves inference models. Weight `i` lives in storage `i` and holds
 /// small deterministic values.
 pub fn rvc_pth(f: &Fixture) -> Vec<u8> {
+    rvc_pth_with(f, &mut |numel| {
+        (0..numel)
+            .map(|j| f32::from(u8::try_from(j % 8).expect("< 8")) * 0.125 - 0.5)
+            .collect()
+    })
+}
+
+/// Like [`rvc_pth`], with weight values from `values(numel)`.
+fn rvc_pth_with(f: &Fixture, values: &mut dyn FnMut(usize) -> Vec<f32>) -> Vec<u8> {
     let mut weights = Vec::new();
     let mut storages = Vec::new();
     for (i, (name, shape, dtype)) in f.weights.iter().enumerate() {
         let key = i.to_string();
         let numel = shape.iter().product::<usize>();
-        let values: Vec<f32> = (0..numel)
-            .map(|j| f32::from(u8::try_from(j % 8).expect("< 8")) * 0.125 - 0.5)
-            .collect();
+        let values = values(numel);
         let bytes = match dtype {
             DType::F32 => f32_bytes(&values),
             DType::F16 => f16_bytes(&values),
@@ -396,6 +403,85 @@ pub fn rvc_pth(f: &Fixture) -> Vec<u8> {
     torch_zip("archive", &pickle(&P::OrderedDict(root)), &storages)
 }
 
+/// `cfg` as RVC's config list (Appendix C order).
+#[cfg(feature = "validate")]
+fn config_list(cfg: &ArchConfig) -> Vec<P> {
+    let uint = |v: u32| P::Int(i64::from(v));
+    let uints = |v: &[u32]| P::List(v.iter().map(|&v| uint(v)).collect());
+    vec![
+        uint(cfg.spec_channels),
+        P::Int(32),
+        uint(cfg.inter_channels),
+        uint(cfg.hidden_channels),
+        uint(cfg.filter_channels),
+        uint(cfg.n_heads),
+        uint(cfg.n_layers),
+        uint(cfg.kernel_size),
+        P::Int(0),
+        P::Str(cfg.resblock.clone()),
+        uints(&cfg.resblock_kernel_sizes),
+        P::List(
+            cfg.resblock_dilation_sizes
+                .iter()
+                .map(|d| uints(d))
+                .collect(),
+        ),
+        uints(&cfg.upsample_rates),
+        uint(cfg.upsample_initial_channel),
+        uints(&cfg.upsample_kernel_sizes),
+        P::Int(109),
+        uint(cfg.gin_channels),
+        uint(cfg.sr),
+    ]
+}
+
+/// A `.pth` that fits template `t`: its config, and one fp16 weight per
+/// stripped initializer with the same dims (`emb_g.weight` with `speakers`
+/// rows), holding seeded normal values × 0.02.
+#[cfg(feature = "validate")]
+pub fn synthetic_pth(t: &Template, speakers: usize) -> Vec<u8> {
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    let model = crate::onnx::decode(t.bytes).expect("decode template");
+    let weights = model
+        .graph
+        .iter()
+        .flat_map(|g| &g.initializer)
+        .filter(|t| crate::template::is_stripped(t))
+        .map(|t| {
+            let name = t.name.clone().unwrap_or_default();
+            let mut shape: Vec<usize> = t
+                .dims
+                .iter()
+                .map(|&d| usize::try_from(d).expect("dim"))
+                .collect();
+            if name == "emb_g.weight" {
+                shape[0] = speakers;
+            }
+            (name, shape, DType::F16)
+        })
+        .collect();
+    let fixture = Fixture {
+        version: Some("v2"),
+        f0: Some(1),
+        config: config_list(&t.info.config),
+        weights,
+        extra: Vec::new(),
+    };
+    let mut rng = StdRng::seed_from_u64(0);
+    rvc_pth_with(&fixture, &mut |numel| {
+        (0..numel)
+            .map(|_| {
+                // Box–Muller.
+                let u1 = rng.random::<f32>().max(1e-7);
+                let u2 = rng.random::<f32>();
+                (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos() * 0.02
+            })
+            .collect()
+    })
+}
+
 /// A tiny template for `cfg`: stripped FLOAT initializers
 /// `enc_p.emb_phone.weight` [192, 768], `emb_g.weight` [109, 256] and
 /// `dec.conv_pre.weight` [512, 192, 7], as in [`Fixture::v2_40k`], and one
@@ -436,4 +522,26 @@ pub fn toy_template(cfg: ArchConfig) -> Template {
         },
         bytes: Vec::leak(crate::onnx::encode(&model)),
     }
+}
+
+/// True when every asset resolves. Otherwise panics if `VC_REQUIRE_ASSETS=1`,
+/// or prints a skip notice and returns false.
+#[cfg(feature = "validate")]
+pub fn assets_or_skip(rel: &[&str]) -> bool {
+    let missing: Vec<&str> = rel
+        .iter()
+        .copied()
+        .filter(|r| vc_engine::assets::asset(r).is_err())
+        .collect();
+    if missing.is_empty() {
+        return true;
+    }
+    if std::env::var("VC_REQUIRE_ASSETS").as_deref() == Ok("1") {
+        panic!(
+            "missing {}: run `cargo xtask fetch-models`",
+            missing.join(", ")
+        );
+    }
+    println!("skipping: missing {}", missing.join(", "));
+    false
 }

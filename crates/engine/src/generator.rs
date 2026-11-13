@@ -145,8 +145,7 @@ impl Generator {
     }
 
     fn new(session: Session, active: ActiveProvider, sr_override: Option<u32>) -> Result<Self> {
-        let inputs: Vec<IoSpec> = session.inputs().iter().map(io_spec).collect();
-        let outputs: Vec<IoSpec> = session.outputs().iter().map(io_spec).collect();
+        let (inputs, outputs) = io_specs(&session);
         validate_signature(&inputs, &outputs)?;
         let metadata_sr = session.metadata().map_err(inference)?.custom("sr");
         let sr = resolve_sr(metadata_sr.as_deref(), sr_override)?;
@@ -189,6 +188,37 @@ impl Generator {
         }
         Ok(audio.to_vec())
     }
+}
+
+/// What import needs to know about a generator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelMeta {
+    pub sample_rate: Option<u32>,
+    pub f0: bool,
+}
+
+/// Opens `path` on the CPU, checks the RVC v2 signature and reads the `sr` metadata.
+pub fn inspect_model(path: &Path) -> Result<ModelMeta> {
+    let (session, _) = runtime::open_session(path, Provider::Cpu)?;
+    let (inputs, outputs) = io_specs(&session);
+    validate_signature(&inputs, &outputs)?;
+    let sr = session.metadata().map_err(inference)?.custom("sr");
+    let sample_rate = match sr.as_deref().and_then(|m| m.trim().parse::<u32>().ok()) {
+        Some(sr) => Some(resolve_sr(None, Some(sr))?),
+        None => None,
+    };
+    // validate_signature already rejects models without F0.
+    Ok(ModelMeta {
+        sample_rate,
+        f0: true,
+    })
+}
+
+fn io_specs(session: &Session) -> (Vec<IoSpec>, Vec<IoSpec>) {
+    (
+        session.inputs().iter().map(io_spec).collect(),
+        session.outputs().iter().map(io_spec).collect(),
+    )
 }
 
 fn io_spec(outlet: &Outlet) -> IoSpec {
@@ -476,5 +506,82 @@ mod tests {
         assert!(reason(r).contains("--sr"));
         let g = Generator::load_from_memory(&model, Provider::Cpu, Some(48000)).unwrap();
         assert_eq!(g.sample_rate(), 48000);
+    }
+
+    /// Writes `bytes` to a temp file, inspects it and removes the file.
+    fn inspect_bytes(case: &str, bytes: &[u8]) -> Result<ModelMeta> {
+        let path = crate::testutil::temp_path(&format!("inspect-{case}.onnx"));
+        std::fs::write(&path, bytes).unwrap();
+        let r = inspect_model(&path);
+        std::fs::remove_file(&path).unwrap();
+        r
+    }
+
+    #[test]
+    fn inspect_valid_reads_sr() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        let meta = inspect_bytes("valid", &tiny(768, F32, true, &[("sr", "40000")])).unwrap();
+        assert_eq!(
+            meta,
+            ModelMeta {
+                sample_rate: Some(40000),
+                f0: true
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_without_sr_is_none() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        let meta = inspect_bytes("no-sr", &tiny(768, F32, true, &[])).unwrap();
+        assert_eq!(meta.sample_rate, None);
+        assert!(meta.f0);
+    }
+
+    #[test]
+    fn inspect_rejects_fp16_v1_no_pitch() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        let sr = [("sr", "40000")];
+        assert_eq!(
+            reason(inspect_bytes("fp16", &tiny(768, F16, true, &sr))),
+            "fp16 export"
+        );
+        assert_eq!(
+            reason(inspect_bytes("v1", &tiny(256, F32, true, &sr))),
+            "RVC v1 (256-dim)"
+        );
+        assert!(
+            reason(inspect_bytes("no-pitch", &tiny(768, F32, false, &sr))).contains("no F0 inputs")
+        );
+    }
+
+    #[test]
+    fn inspect_unsupported_sr_rejected() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        let r = inspect_bytes("sr-44100", &tiny(768, F32, true, &[("sr", "44100")]));
+        assert_eq!(
+            reason(r),
+            "unsupported sample rate 44100 (expected 32000, 40000 or 48000)"
+        );
+    }
+
+    #[test]
+    fn inspect_not_onnx_fails() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        let r = inspect_bytes("not-onnx", b"not a model");
+        assert!(
+            matches!(r, Err(EngineError::RuntimeInit(_))),
+            "expected RuntimeInit, got {r:?}"
+        );
     }
 }

@@ -2,10 +2,19 @@
 //! VoiceChanger desktop app.
 
 mod app;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired into the app in the next step")
+)]
+mod config;
 mod engine;
 mod model;
+#[expect(dead_code, reason = "wired into the app in the next step")]
+mod paths;
 mod status_bar;
 mod tabs;
+#[cfg(test)]
+mod testutil;
 mod widgets;
 
 use eframe::egui;

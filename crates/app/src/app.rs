@@ -8,6 +8,7 @@ use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use vc_audio::{
     AudioControl, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Processor, Selection, SessionInfo,
     Shared, StreamStatus, db_to_gain,
@@ -102,7 +103,8 @@ impl Tab {
 }
 
 /// Execution provider picked in Settings → Performance.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderChoice {
     #[default]
     DirectMl,
@@ -131,7 +133,8 @@ impl PerfSettings {
 }
 
 /// Voice tab controls, applied live to the running stream.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VoiceSettings {
     /// Pitch shift in semitones.
     pub pitch: i32,

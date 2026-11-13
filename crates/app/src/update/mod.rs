@@ -5,4 +5,5 @@ pub mod release;
 pub mod schedule;
 #[cfg(test)]
 mod testserver;
+pub mod verify;
 pub mod version;

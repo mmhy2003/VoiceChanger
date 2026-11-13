@@ -2,6 +2,8 @@
 
 pub mod checkpoint;
 mod error;
+#[cfg(test)]
+mod mutation_tests;
 pub mod onnx;
 pub mod pickle;
 pub mod pth;

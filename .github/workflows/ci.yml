@@ -48,6 +48,23 @@ jobs:
       - name: Release build
         run: cargo build --release
 
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/convert/fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz the pickle reader
+        working-directory: crates/convert
+        run: cargo +nightly fuzz run pickle -- -max_total_time=150
+      - name: Fuzz the .pth reader
+        working-directory: crates/convert
+        run: cargo +nightly fuzz run pth -- -max_total_time=150
+
   release-guard:
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: windows-latest

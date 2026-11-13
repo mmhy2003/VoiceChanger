@@ -1,0 +1,30 @@
+[package]
+name = "vc-convert-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vc-convert = { path = "..", default-features = false }
+
+# Stand-alone: the fuzz crate builds on its own, outside the root workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "pickle"
+path = "fuzz_targets/pickle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pth"
+path = "fuzz_targets/pth.rs"
+test = false
+doc = false
+bench = false

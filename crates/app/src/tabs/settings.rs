@@ -7,6 +7,7 @@ use crate::app::{ProviderChoice, VcApp};
 use crate::files;
 use crate::hotkey::{RecordOutcome, record_key};
 use crate::paths::AppDirs;
+use crate::update;
 use crate::widgets;
 
 const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
@@ -176,7 +177,7 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
     }
 }
 
-/// Settings → General: the Start/Stop hotkey, Start minimised, the logs folder and About.
+/// Settings → General: the Start/Stop hotkey, Start minimised, updates, the logs folder and About.
 fn general(ui: &mut egui::Ui, app: &mut VcApp) {
     ui.separator();
     ui.heading("General");
@@ -226,6 +227,7 @@ fn general(ui: &mut egui::Ui, app: &mut VcApp) {
     }
 
     ui.checkbox(&mut app.prefs.start_minimised, "Start minimised");
+    update::ui::settings_rows(ui, app);
     ui.horizontal(|ui| {
         if ui.button("Open logs folder").clicked() {
             files::open_folder(&app.dirs.logs);

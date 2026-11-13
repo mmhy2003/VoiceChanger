@@ -7,6 +7,7 @@ pub mod schedule;
 pub mod state;
 #[cfg(test)]
 mod testserver;
+pub mod ui;
 pub mod verify;
 pub mod version;
 pub mod worker;

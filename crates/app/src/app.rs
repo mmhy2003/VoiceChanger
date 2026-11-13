@@ -1,7 +1,7 @@
 //! Top-level app state and the tab bar.
 
 use std::any::Any;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, PoisonError};
@@ -31,6 +31,12 @@ use crate::tabs;
 use crate::tabs::convert::ConvertUi;
 use crate::tabs::models::ModelsUi;
 use crate::tabs::voice::start_hint;
+use crate::update::client::LATEST_URL;
+use crate::update::schedule::{check_due, next_check, unix_now};
+use crate::update::state::{Action, Phase, UpdateState};
+use crate::update::version::Version;
+use crate::update::worker::{Command, Updater, WorkerConfig};
+use crate::update::{self, install};
 use crate::widgets::MeterState;
 
 /// Window title, including the app version.
@@ -292,6 +298,12 @@ pub struct VcApp {
     /// Why the hotkey could not be parsed, recorded or registered.
     pub(crate) hotkey_error: Option<String>,
     pub(crate) show_about: bool,
+    /// The update check, offer, download and install.
+    pub(crate) updates: UpdateState,
+    /// Checks and downloads updates in the background.
+    pub(crate) updater: Updater,
+    /// When the window opened; the first automatic check waits a moment after it.
+    started: Instant,
 }
 
 /// What `main` hands the app: its folders, the loaded settings and any notes from loading them.
@@ -332,6 +344,16 @@ impl VcApp {
         let hotkey_note = hotkey_error.as_ref().map(|e| format!("Hotkey: {e}"));
         let notes: Vec<&str> = notes.into_iter().chain(hotkey_note.as_deref()).collect();
         let banner = (!notes.is_empty()).then(|| notes.join(" "));
+        let ctx = cc.egui_ctx.clone();
+        let updater = Updater::spawn(
+            WorkerConfig {
+                latest_url: LATEST_URL.into(),
+                dir: startup.dirs.updates.clone(),
+                current: Version::current(),
+                running_exe: std::env::current_exe().ok(),
+            },
+            Box::new(move || ctx.request_repaint()),
+        );
         let mut app = Self {
             tab: Tab::default(),
             state,
@@ -365,6 +387,9 @@ impl VcApp {
             recording_hotkey: false,
             hotkey_error,
             show_about: false,
+            updates: UpdateState::default(),
+            updater,
+            started: Instant::now(),
         };
         // Load the last model; the app never starts streaming by itself.
         if let Some(id) = app.prefs.last_model.clone()
@@ -702,6 +727,75 @@ impl VcApp {
             underruns: self.shared.underruns.load(Relaxed),
         })
     }
+
+    /// Asks the update thread for the latest release, unless a check or download is under way.
+    /// The check time is saved either way, so a busy updater does not make the schedule spin.
+    pub(crate) fn check_for_updates(&mut self, manual: bool) {
+        self.prefs.updates.last_check = unix_now();
+        if self.updates.can_check() {
+            self.updates.checking(manual);
+            self.updater.send(Command::Check { manual });
+        }
+    }
+
+    /// Carries out what the update state asked for.
+    pub(crate) fn run_update_action(&mut self, ctx: &egui::Context, action: Option<Action>) {
+        match action {
+            Some(Action::Send(command)) => self.updater.send(command),
+            Some(Action::Install(path)) => self.install_update(ctx, &path),
+            None => {}
+        }
+    }
+
+    /// Stops audio, saves the settings, starts the installer and closes the window.
+    /// If the installer cannot start, the app stays open and the window says why.
+    fn install_update(&mut self, ctx: &egui::Context, path: &Path) {
+        self.stop();
+        self.write_config(self.state.to_config(&self.prefs));
+        match install::spawn_installer(path, &self.dirs.logs.join("update-install.log")) {
+            Ok(()) => {
+                self.updates.phase = Phase::Installing;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(e) => {
+                tracing::warn!("cannot start the installer {}: {e}", path.display());
+                self.updates.error = Some(format!("Could not start the installer: {e}"));
+                self.updates.window_open = true;
+            }
+        }
+    }
+
+    /// Takes the update thread's messages and starts an automatic check when one is due.
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        for msg in self.updater.poll() {
+            let action = self
+                .updates
+                .apply(msg, &self.prefs.updates, Version::current());
+            self.run_update_action(ctx, action);
+        }
+        let prefs = &self.prefs.updates;
+        if check_due(
+            prefs.auto_check,
+            prefs.last_check,
+            unix_now(),
+            self.started.elapsed(),
+        ) {
+            self.check_for_updates(false);
+        }
+        let prefs = &self.prefs.updates;
+        if let Some(wait) = next_check(
+            prefs.auto_check,
+            prefs.last_check,
+            unix_now(),
+            self.started.elapsed(),
+        ) {
+            ctx.request_repaint_after(wait);
+        }
+        // Keeps the progress bar and the Checking… label moving.
+        if self.updates.busy() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
 }
 
 /// Banner and Start hint when the audio-control thread has died.
@@ -722,6 +816,7 @@ impl eframe::App for VcApp {
         self.handle_drops(ctx);
         self.poll_import();
         self.poll_convert();
+        self.poll_updates(ctx);
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
         if self.hotkeys.take_pressed() {
@@ -740,6 +835,7 @@ impl eframe::App for VcApp {
         let before = self.state.selection.clone();
         let provider_before = self.state.perf.provider();
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+            update::ui::banner(ui, self);
             ui.horizontal(|ui| {
                 for t in Tab::ALL {
                     ui.selectable_value(&mut self.tab, t, t.label());
@@ -755,6 +851,7 @@ impl eframe::App for VcApp {
             Tab::Convert => tabs::convert::show(ui, self),
             Tab::Settings => tabs::settings::show(ui, self),
         });
+        update::ui::window(ctx, self);
         // Block, context and crossfade restart the stream on release; the model is kept.
         if self.is_running() && (self.state.selection != before || self.restart_requested) {
             self.stop();

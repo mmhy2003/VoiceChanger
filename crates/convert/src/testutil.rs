@@ -267,3 +267,130 @@ pub fn bf16_bytes(values: &[f32]) -> Vec<u8> {
 pub fn f32_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
+
+fn ints(values: &[i64]) -> P {
+    P::List(values.iter().map(|&v| P::Int(v)).collect())
+}
+
+/// An RVC config list (Appendix C order) with the given sample-rate fields.
+fn config(spec: i64, rates: &[i64], kernels: &[i64], sr: i64) -> Vec<P> {
+    vec![
+        P::Int(spec),
+        P::Int(32),
+        P::Int(192),
+        P::Int(192),
+        P::Int(768),
+        P::Int(2),
+        P::Int(6),
+        P::Int(3),
+        P::Int(0),
+        P::Str("1".into()),
+        ints(&[3, 7, 11]),
+        P::List(vec![ints(&[1, 3, 5]), ints(&[1, 3, 5]), ints(&[1, 3, 5])]),
+        ints(rates),
+        P::Int(512),
+        ints(kernels),
+        P::Int(109),
+        P::Int(256),
+        P::Int(sr),
+    ]
+}
+
+/// The RVC v2 40k config list.
+pub fn config_40k() -> Vec<P> {
+    config(1025, &[10, 10, 2, 2], &[16, 16, 4, 4], 40000)
+}
+
+/// The RVC v2 48k config list.
+pub fn config_48k() -> Vec<P> {
+    config(1025, &[12, 10, 2, 2], &[24, 20, 4, 4], 48000)
+}
+
+/// The RVC v2 32k config list.
+pub fn config_32k() -> Vec<P> {
+    config(513, &[10, 8, 2, 2], &[20, 16, 4, 4], 32000)
+}
+
+/// The parts of an RVC inference checkpoint, for [`rvc_pth`].
+/// `None` leaves the key out.
+pub struct Fixture {
+    pub version: Option<&'static str>,
+    pub f0: Option<i64>,
+    pub config: Vec<P>,
+    /// Name, shape and dtype of each weight.
+    pub weights: Vec<(String, Vec<usize>, DType)>,
+    /// More top-level keys, written last.
+    pub extra: Vec<(&'static str, P)>,
+}
+
+impl Fixture {
+    /// A small fp16 v2 40k model with 3 speakers.
+    pub fn v2_40k() -> Self {
+        Self {
+            version: Some("v2"),
+            f0: Some(1),
+            config: config_40k(),
+            weights: vec![
+                ("enc_p.emb_phone.weight".into(), vec![192, 768], DType::F16),
+                ("emb_g.weight".into(), vec![3, 256], DType::F16),
+                ("dec.conv_pre.weight".into(), vec![512, 192, 7], DType::F16),
+                ("enc_q.enc.in_layers.0.bias".into(), vec![384], DType::F16),
+            ],
+            extra: Vec::new(),
+        }
+    }
+}
+
+/// `f` as the bytes of a `.pth` (torch zip with prefix `archive`), the way
+/// RVC saves inference models. Weight `i` lives in storage `i` and holds
+/// small deterministic values.
+pub fn rvc_pth(f: &Fixture) -> Vec<u8> {
+    let mut weights = Vec::new();
+    let mut storages = Vec::new();
+    for (i, (name, shape, dtype)) in f.weights.iter().enumerate() {
+        let key = i.to_string();
+        let numel = shape.iter().product::<usize>();
+        let values: Vec<f32> = (0..numel)
+            .map(|j| f32::from(u8::try_from(j % 8).expect("< 8")) * 0.125 - 0.5)
+            .collect();
+        let bytes = match dtype {
+            DType::F32 => f32_bytes(&values),
+            DType::F16 => f16_bytes(&values),
+            DType::BF16 => bf16_bytes(&values),
+            other => vec![0; numel * other.size()],
+        };
+        weights.push((
+            P::Str(name.clone()),
+            P::Tensor {
+                key: key.clone(),
+                dtype: *dtype,
+                numel,
+                offset: 0,
+                shape: shape.clone(),
+                stride: contiguous(shape),
+            },
+        ));
+        storages.push((key, bytes));
+    }
+
+    let mut root = vec![
+        (P::Str("weight".into()), P::Dict(weights)),
+        (P::Str("config".into()), P::List(f.config.clone())),
+        (P::Str("info".into()), P::Str("300epoch".into())),
+        (P::Str("sr".into()), P::Str("40k".into())),
+    ];
+    if let Some(f0) = f.f0 {
+        root.push((P::Str("f0".into()), P::Int(f0)));
+    }
+    if let Some(version) = f.version {
+        root.push((P::Str("version".into()), P::Str(version.into())));
+    }
+    for (k, v) in &f.extra {
+        root.push((P::Str((*k).into()), v.clone()));
+    }
+    let storages: Vec<(&str, Vec<u8>)> = storages
+        .iter()
+        .map(|(k, b)| (k.as_str(), b.clone()))
+        .collect();
+    torch_zip("archive", &pickle(&P::OrderedDict(root)), &storages)
+}

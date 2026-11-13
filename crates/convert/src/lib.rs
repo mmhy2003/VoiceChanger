@@ -1,5 +1,6 @@
 //! Conversion of PyTorch `.pth` RVC v2 models to ONNX.
 
+pub mod checkpoint;
 mod error;
 pub mod onnx;
 pub mod pickle;

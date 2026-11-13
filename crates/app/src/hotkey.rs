@@ -1,5 +1,4 @@
 //! The global Start/Stop hotkey: parsing, recording and registering a key combination.
-#![expect(dead_code, reason = "wired into Settings in the next step")]
 
 use std::fmt;
 use std::sync::Arc;

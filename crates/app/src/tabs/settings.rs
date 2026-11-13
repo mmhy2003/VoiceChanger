@@ -1,9 +1,12 @@
-//! Settings tab: audio devices, monitor, Refresh, warnings and Performance.
+//! Settings tab: audio devices, monitor, Refresh, warnings, Performance and General.
 
 use eframe::egui;
 use vc_audio::{feedback_warnings, is_virtual_cable, start_blocker};
 
 use crate::app::{ProviderChoice, VcApp};
+use crate::files;
+use crate::hotkey::{RecordOutcome, record_key};
+use crate::paths::AppDirs;
 use crate::widgets;
 
 const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
@@ -109,6 +112,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
     }
 
     performance(ui, app);
+    general(ui, app);
 }
 
 /// Settings → Performance: provider, GPU and the block, context and crossfade sliders.
@@ -172,6 +176,109 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
     }
 }
 
+/// Settings → General: the Start/Stop hotkey, Start minimised, the logs folder and About.
+fn general(ui: &mut egui::Ui, app: &mut VcApp) {
+    ui.separator();
+    ui.heading("General");
+
+    ui.horizontal(|ui| {
+        ui.label("Hotkey:");
+        let current = app.prefs.hotkey.as_deref().unwrap_or("Off");
+        // A recording error is not about the saved hotkey, which stays active.
+        if app.hotkey_error.is_some() && app.prefs.hotkey.is_some() && !app.recording_hotkey {
+            ui.label(format!("{current} (not active)"));
+        } else {
+            ui.label(current);
+        }
+        if ui
+            .add_enabled(!app.recording_hotkey, egui::Button::new("Set…"))
+            .clicked()
+        {
+            app.recording_hotkey = true;
+        }
+        if ui.button("Clear").clicked() {
+            // Clearing never fails.
+            let _ = app.hotkeys.set(None);
+            app.prefs.hotkey = None;
+            app.hotkey_error = None;
+            app.recording_hotkey = false;
+        }
+    });
+    if app.recording_hotkey {
+        ui.label("Press a key combination (Esc cancels)…");
+        let pressed = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        if let Some((key, mods)) = pressed {
+            record(app, key, mods);
+        }
+    }
+    if let Some(error) = &app.hotkey_error {
+        ui.colored_label(ui.visuals().error_fg_color, error);
+    }
+
+    ui.checkbox(&mut app.prefs.start_minimised, "Start minimised");
+    ui.horizontal(|ui| {
+        if ui.button("Open logs folder").clicked() {
+            files::open_folder(&app.dirs.logs);
+        }
+        if ui.button("About…").clicked() {
+            app.show_about = true;
+        }
+    });
+
+    let lines = about_lines(&app.dirs);
+    egui::Window::new("About VoiceChanger")
+        .open(&mut app.show_about)
+        .collapsible(false)
+        .show(ui.ctx(), |ui| {
+            ui.heading("VoiceChanger");
+            egui::Grid::new("about")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    for (label, value) in &lines {
+                        ui.label(*label);
+                        if *label == "Repository" {
+                            ui.hyperlink(value);
+                        } else {
+                            ui.label(value);
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+/// Applies a key press made while recording the hotkey.
+fn record(app: &mut VcApp, key: egui::Key, mods: egui::Modifiers) {
+    match record_key(key, mods) {
+        RecordOutcome::Cancel => app.recording_hotkey = false,
+        RecordOutcome::Invalid(msg) => app.hotkey_error = Some(msg),
+        RecordOutcome::Combo(combo) => {
+            match app.hotkeys.set(Some(combo)) {
+                Ok(()) => {
+                    app.prefs.hotkey = Some(combo.to_string());
+                    app.hotkey_error = None;
+                }
+                Err(msg) => {
+                    app.hotkey_error = Some(msg);
+                    app.prefs.hotkey = None;
+                }
+            }
+            app.recording_hotkey = false;
+        }
+    }
+}
+
 /// True when a running session must restart after this slider interaction.
 pub fn needs_restart(running: bool, drag_stopped: bool, changed: bool, dragged: bool) -> bool {
     running && (drag_stopped || (changed && !dragged))
@@ -209,8 +316,23 @@ fn output_label(name: &str) -> String {
     }
 }
 
+/// The About box rows: version, licence, repository and the app's folders.
+pub fn about_lines(dirs: &AppDirs) -> Vec<(&'static str, String)> {
+    let folder = |p: &std::path::Path| p.display().to_string();
+    vec![
+        ("Version", env!("CARGO_PKG_VERSION").to_string()),
+        ("Licence", env!("CARGO_PKG_LICENSE").to_string()),
+        ("Repository", env!("CARGO_PKG_REPOSITORY").to_string()),
+        ("Models folder", folder(&dirs.models)),
+        ("Settings folder", folder(&dirs.config)),
+        ("Logs folder", folder(&dirs.logs)),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -237,5 +359,25 @@ mod tests {
         );
         assert_eq!(inference_warning(0.6), None);
         assert_eq!(inference_warning(0.0), None);
+    }
+
+    #[test]
+    fn about_lines_has_licence_and_folders() {
+        let dirs = AppDirs::under(Path::new("C:/r"), Path::new("C:/l"));
+        let folder = |p: &Path| p.display().to_string();
+        assert_eq!(
+            about_lines(&dirs),
+            vec![
+                ("Version", env!("CARGO_PKG_VERSION").to_string()),
+                ("Licence", "MIT".to_string()),
+                (
+                    "Repository",
+                    "https://github.com/mmhy2003/VoiceChanger".to_string()
+                ),
+                ("Models folder", folder(&dirs.models)),
+                ("Settings folder", folder(&dirs.config)),
+                ("Logs folder", folder(&dirs.logs)),
+            ]
+        );
     }
 }

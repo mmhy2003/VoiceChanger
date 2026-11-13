@@ -11,7 +11,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use vc_audio::{
     AudioControl, DeviceList, DeviceRef, Endpoint, Processor, Selection, SessionInfo, Shared,
-    StreamStatus, db_to_gain,
+    StreamStatus, db_to_gain, start_blocker,
 };
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
@@ -20,6 +20,7 @@ use vc_models::{Library, ModelEntry};
 
 use crate::engine::{EngineProcessor, ErrorSlot};
 use crate::files;
+use crate::hotkey::{Combo, Hotkeys};
 use crate::import::{DropAction, Importer, Notice, classify_drop};
 use crate::model::{self, ModelSlot, provider_label};
 use crate::paths::AppDirs;
@@ -27,6 +28,7 @@ use crate::status_bar::{self, StatusSnapshot};
 use crate::switch::{PendingSwitch, SwitchPlan, pitch_for, plan_switch};
 use crate::tabs;
 use crate::tabs::models::ModelsUi;
+use crate::tabs::voice::start_hint;
 use crate::widgets::MeterState;
 
 /// Window title, including the app version.
@@ -259,7 +261,7 @@ pub struct VcApp {
     /// Set once the dead-audio-thread banner has been shown, so dismissing it sticks.
     audio_dead_shown: bool,
     /// Where the settings, models and logs live.
-    dirs: AppDirs,
+    pub(crate) dirs: AppDirs,
     /// The saved preferences that live outside `state`.
     pub(crate) prefs: Prefs,
     /// Writes the settings a moment after they change.
@@ -276,6 +278,13 @@ pub struct VcApp {
     pub(crate) import_pick_rx: Option<Receiver<Option<PathBuf>>>,
     /// Renaming, delete confirmation and the icon picker on the Models tab.
     pub(crate) models_ui: ModelsUi,
+    /// The global Start/Stop hotkey.
+    pub(crate) hotkeys: Hotkeys,
+    /// Set… was pressed; the next key combination becomes the hotkey.
+    pub(crate) recording_hotkey: bool,
+    /// Why the hotkey could not be parsed, recorded or registered.
+    pub(crate) hotkey_error: Option<String>,
+    pub(crate) show_about: bool,
 }
 
 /// What `main` hands the app: its folders, the loaded settings and any notes from loading them.
@@ -305,6 +314,16 @@ impl VcApp {
             .chain(&state.notes)
             .map(String::as_str)
             .collect();
+        let mut hotkeys = Hotkeys::new(&cc.egui_ctx);
+        // A saved hotkey that fails is kept, so it is tried again next launch.
+        let hotkey_error = startup.config.hotkey.as_deref().and_then(|s| {
+            Combo::parse(s)
+                .map_err(|e| e.to_string())
+                .and_then(|c| hotkeys.set(Some(c)))
+                .err()
+        });
+        let hotkey_note = hotkey_error.as_ref().map(|e| format!("Hotkey: {e}"));
+        let notes: Vec<&str> = notes.into_iter().chain(hotkey_note.as_deref()).collect();
         let banner = (!notes.is_empty()).then(|| notes.join(" "));
         let mut app = Self {
             tab: Tab::default(),
@@ -333,6 +352,10 @@ impl VcApp {
             convert_file: None,
             import_pick_rx: None,
             models_ui: ModelsUi::default(),
+            hotkeys,
+            recording_hotkey: false,
+            hotkey_error,
+            show_about: false,
         };
         // Load the last model; the app never starts streaming by itself.
         if let Some(id) = app.prefs.last_model.clone()
@@ -564,6 +587,21 @@ impl VcApp {
         }
     }
 
+    /// The hotkey stops a running session, or starts one when Start could be pressed.
+    fn toggle_from_hotkey(&mut self) {
+        if self.is_running() {
+            self.stop();
+        } else if let Some(hint) = start_hint(
+            self.audio.is_alive(),
+            start_blocker(&self.state.devices, &self.state.selection),
+            self.model.is_ready(),
+        ) {
+            self.banner = Some(format!("Hotkey: cannot start. {hint}"));
+        } else {
+            self.start();
+        }
+    }
+
     /// Stops audio, takes the model back and clears the meters.
     pub(crate) fn stop(&mut self) {
         if self.session_info.take().is_some() {
@@ -663,6 +701,9 @@ impl eframe::App for VcApp {
         self.poll_import();
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
+        if self.hotkeys.take_pressed() {
+            self.toggle_from_hotkey();
+        }
         self.push_voice();
         if self.is_running() {
             let dt = ctx.input(|i| i.stable_dt);

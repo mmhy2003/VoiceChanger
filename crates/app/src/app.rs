@@ -98,10 +98,6 @@ impl Tab {
 
 /// Execution provider picked in Settings → Performance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "the Performance settings pick Cuda and Cpu from step 11 on"
-)]
 pub enum ProviderChoice {
     #[default]
     DirectMl,
@@ -203,9 +199,11 @@ pub struct VcApp {
     /// Pitch and gate, read by the streamer once per block.
     controls: Arc<Controls>,
     /// Inference timings written by the streamer.
-    stats: Arc<StreamStats>,
+    pub(crate) stats: Arc<StreamStats>,
     /// Why the voice processor failed, for the banner.
     processor_error: ErrorSlot,
+    /// Set by a block, context or crossfade change; the stream restarts after this frame.
+    pub(crate) restart_requested: bool,
 }
 
 impl VcApp {
@@ -224,6 +222,7 @@ impl VcApp {
             controls: Arc::new(Controls::new()),
             stats: Arc::new(StreamStats::new()),
             processor_error: ErrorSlot::default(),
+            restart_requested: false,
         }
     }
 
@@ -383,6 +382,7 @@ impl eframe::App for VcApp {
 
         // A volume change is not a selection change, so it doesn't restart the session.
         let before = self.state.selection.clone();
+        let provider_before = self.state.perf.provider();
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 for t in Tab::ALL {
@@ -396,9 +396,18 @@ impl eframe::App for VcApp {
             Tab::Convert => tabs::convert::show(ui),
             Tab::Settings => tabs::settings::show(ui, self),
         });
-        if self.is_running() && self.state.selection != before {
+        // Block, context and crossfade restart the stream on release; the model is kept.
+        if self.is_running() && (self.state.selection != before || self.restart_requested) {
             self.stop();
             self.start();
+        }
+        self.restart_requested = false;
+        // A new provider or GPU needs a fresh session, so the model is reloaded.
+        if self.state.perf.provider() != provider_before
+            && !self.is_running()
+            && let Some(path) = &self.model_path
+        {
+            self.load_model(path.clone());
         }
 
         if self.is_running() {

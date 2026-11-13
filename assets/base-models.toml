@@ -1,0 +1,38 @@
+# Base models and ONNX Runtime binaries fetched by `cargo xtask fetch-models`.
+# Files land in vendor/ (gitignored); a runtime's `licence_extract` is copied
+# to vendor/licences/<dest file stem>.txt. Never commit them. URLs are pinned
+# revisions or immutable release assets (hubert.onnx is hosted on this repo's
+# base-models-1 prerelease, made by tools/export-hubert); every download is
+# checked against its SHA-256.
+
+[[model]]
+name = "HuBERT base (RVC, MIT)"
+url = "https://github.com/mmhy2003/VoiceChanger/releases/download/base-models-1/hubert.onnx"
+sha256 = "133fb6e66b41fecaa107c5ce0a8fcc3491b245c18b12cc54d2137b95cbd982a0"
+licence = "MIT (lj1995/VoiceConversionWebUI)"
+dest = "models/hubert.onnx"
+
+[[model]]
+name = "RMVPE"
+url = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/e6d0c1a17da07c33557852f9dfa2bd44cc75737d/rmvpe.onnx"
+sha256 = "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd"
+licence = "MIT (lj1995/VoiceConversionWebUI)"
+dest = "models/rmvpe.onnx"
+
+[[runtime]]
+name = "ONNX Runtime DirectML 1.24.4"
+url = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.24.4/microsoft.ml.onnxruntime.directml.1.24.4.nupkg"
+sha256 = "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681"
+licence = "MIT (Microsoft ONNX Runtime)"
+extract = "runtimes/win-x64/native/onnxruntime.dll"
+dest = "runtime/onnxruntime.dll"
+licence_extract = "LICENSE"
+
+[[runtime]]
+name = "DirectML 1.15.4"
+url = "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg"
+sha256 = "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9"
+licence = "Microsoft DirectML licence (redistributable, see LICENSE.txt in the package)"
+extract = "bin/x64-win/DirectML.dll"
+dest = "runtime/DirectML.dll"
+licence_extract = "LICENSE.txt"

@@ -1,0 +1,42 @@
+[graph]
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; transitive via eframe, no fixed release" },
+]
+
+# Widen this list only with a reason in the PR description (project licence is MIT).
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0", # clipboard-win, error-code (eframe clipboard via arboard)
+    "OFL-1.1", # epaint_default_fonts (egui bundled fonts)
+    "Ubuntu-font-1.0", # epaint_default_fonts (egui bundled fonts)
+]
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+exceptions = [
+    # dirs -> dirs-sys; MPL-2.0 is file-level copyleft and the crate is used unmodified.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

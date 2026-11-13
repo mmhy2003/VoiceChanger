@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version, tag and changelog guard
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(bash .github/scripts/version.sh read)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=Cargo.toml::[workspace.package] version '$version' is not plain X.Y.Z."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "::error file=Cargo.toml::Tag v$version already exists. Bump the version in a release PR."
+            exit 1
+          fi
+          bash .github/scripts/version.sh changelog "$version" > /dev/null
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [prepare, checks]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      signed: ${{ steps.signing.outputs.enabled }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache base models
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ hashFiles('assets/base-models.toml') }}
+      - name: Fetch base models
+        run: cargo xtask fetch-models
+      - name: Release build
+        run: cargo build --release
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Signing enabled?
+        id: signing
+        shell: bash
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          if [ -n "$SIGNPATH_API_TOKEN" ]; then echo "enabled=true"; else echo "enabled=false"; fi >> "$GITHUB_OUTPUT"
+      - name: Upload exe for signing
+        id: exe-unsigned
+        if: steps.signing.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicechanger-exe-unsigned
+          path: target/release/voicechanger.exe
+          if-no-files-found: error
+      - name: Sign exe
+        if: steps.signing.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.exe-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/release
+      - name: Installer
+        shell: pwsh
+        run: ./installer/build.ps1 -Version $env:VERSION -FileVersion "$env:VERSION.0"
+      - name: Upload installer for signing
+        id: setup-unsigned
+        if: steps.signing.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-unsigned
+          path: dist/Setup-VoiceChanger-${{ env.VERSION }}.exe
+          if-no-files-found: error
+      - name: Sign installer
+        if: steps.signing.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.setup-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist
+      - name: Previous release installer
+        id: previous
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/previous-installer.sh
+      - name: Installer test (install, upgrade, uninstall)
+        shell: pwsh
+        run: ./installer/test-install.ps1 -Setup "dist/Setup-VoiceChanger-$env:VERSION.exe" -Version $env:VERSION -FileVersion "$env:VERSION.0" -Previous '${{ steps.previous.outputs.path }}'
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $name = "Setup-VoiceChanger-$env:VERSION.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $PWD "dist/$name")).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD 'dist/SHA256SUMS.txt'), "$hash  $name`n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            dist/Setup-VoiceChanger-${{ env.VERSION }}.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SIGNED: ${{ needs.build.outputs.signed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: dist
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS.txt
+      - name: Release notes
+        env:
+          UNSIGNED_NOTE: 'This build is not code-signed yet. Windows SmartScreen may show "Windows protected your PC": choose More info, then Run anyway. Check the download against SHA256SUMS.txt.'
+        run: |
+          set -euo pipefail
+          bash .github/scripts/version.sh changelog "$VERSION" > notes.md
+          if [ "$SIGNED" != "true" ]; then
+            printf '\n%s\n' "$UNSIGNED_NOTE" >> notes.md
+          fi
+      - name: Tag and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "v$VERSION" --target "$GITHUB_SHA"
+          --title "VoiceChanger $VERSION" --notes-file notes.md
+          "dist/Setup-VoiceChanger-$VERSION.exe" dist/SHA256SUMS.txt
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "v$VERSION" --dir published
+          cd published
+          sha256sum -c SHA256SUMS.txt
+          latest=$(gh release view --json tagName -q .tagName)
+          if [ "$latest" != "v$VERSION" ]; then
+            echo "::error::Latest release is $latest, expected v$VERSION."
+            exit 1
+          fi

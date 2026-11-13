@@ -1,0 +1,16 @@
+[package]
+name = "vc-models"
+description = "Model library and metadata for VoiceChanger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+thiserror = "2"

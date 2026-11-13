@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.workflow is the caller's name under workflow_call, so release.yml never cancels CI on main.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Script tests
+        shell: bash
+        run: bash .github/scripts/test-version.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache base models
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ hashFiles('assets/base-models.toml') }}
+      - name: Fetch base models
+        run: cargo xtask fetch-models
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        env:
+          VC_REQUIRE_ASSETS: "1"
+        run: cargo test --workspace
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-about
+      - name: Licences and advisories
+        run: cargo deny check
+      - name: Release build
+        run: cargo build --release
+      - name: Installer version
+        id: installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(bash .github/scripts/version.sh read)
+          echo "display=$version-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "file=$version.0" >> "$GITHUB_OUTPUT"
+      - name: Installer (smoke build)
+        shell: pwsh
+        run: ./installer/build.ps1 -Version '${{ steps.installer.outputs.display }}' -FileVersion '${{ steps.installer.outputs.file }}'
+      - name: Previous release installer
+        id: previous
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/previous-installer.sh
+      - name: Installer test (install, upgrade, uninstall)
+        shell: pwsh
+        run: ./installer/test-install.ps1 -Setup 'dist/Setup-VoiceChanger-${{ steps.installer.outputs.display }}.exe' -Version '${{ steps.installer.outputs.display }}' -FileVersion '${{ steps.installer.outputs.file }}' -Previous '${{ steps.previous.outputs.path }}'
+      - name: Upload develop installer
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceChanger-${{ steps.installer.outputs.display }}
+          path: dist/Setup-VoiceChanger-${{ steps.installer.outputs.display }}.exe
+          retention-days: 14
+          if-no-files-found: error
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/convert/fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz the pickle reader
+        working-directory: crates/convert
+        run: cargo +nightly fuzz run pickle -- -max_total_time=150
+      - name: Fuzz the .pth reader
+        working-directory: crates/convert
+        run: cargo +nightly fuzz run pth -- -max_total_time=150
+
+  release-guard:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Check source branch, version and changelog
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          case "$HEAD_REF" in
+            develop|hotfix/*) ;;
+            *)
+              echo "::error::PRs into main must come from develop or hotfix/*, not '$HEAD_REF'."
+              exit 1
+              ;;
+          esac
+
+          version=$(bash .github/scripts/version.sh read)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=Cargo.toml::[workspace.package] version '$version' is not plain X.Y.Z."
+            exit 1
+          fi
+
+          latest=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -n 1 || true)
+          if [ -n "$latest" ]; then
+            highest=$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n 1)
+            if [ "$version" = "$latest" ] || [ "$highest" != "$version" ]; then
+              echo "::error file=Cargo.toml::Version $version must be higher than the latest tag v$latest."
+              exit 1
+            fi
+          else
+            echo "No vX.Y.Z tags yet; skipping the tag comparison."
+          fi
+
+          bash .github/scripts/version.sh changelog "$version" > /dev/null || { echo "::error file=CHANGELOG.md::CHANGELOG.md has no non-empty '## [$version]' section."; exit 1; }
+
+          echo "Release guard passed for $version (from $HEAD_REF)."

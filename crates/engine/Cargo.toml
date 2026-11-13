@@ -1,0 +1,20 @@
+[package]
+name = "vc-engine"
+description = "RVC v2 inference pipeline for VoiceChanger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "directml", "cuda", "tracing", "api-24"] }
+rubato = "0.16"
+rustfft = "6"
+rand = "0.9"
+hound = "3"
+thiserror = "2"
+tracing = "0.1"

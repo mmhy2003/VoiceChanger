@@ -1,0 +1,21 @@
+[package]
+name = "vc-audio"
+description = "Audio devices, ring buffers and resampling for VoiceChanger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cpal = "0.17"
+ringbuf = "0.5"
+rubato = "0.16"
+thiserror = "2"
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_System_Com"] }

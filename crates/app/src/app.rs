@@ -26,6 +26,7 @@ use crate::paths::AppDirs;
 use crate::status_bar::{self, StatusSnapshot};
 use crate::switch::{PendingSwitch, SwitchPlan, pitch_for, plan_switch};
 use crate::tabs;
+use crate::tabs::models::ModelsUi;
 use crate::widgets::MeterState;
 
 /// Window title, including the app version.
@@ -273,6 +274,8 @@ pub struct VcApp {
     pub(crate) convert_file: Option<PathBuf>,
     /// The open Import… picker's answer.
     pub(crate) import_pick_rx: Option<Receiver<Option<PathBuf>>>,
+    /// Renaming, delete confirmation and the icon picker on the Models tab.
+    pub(crate) models_ui: ModelsUi,
 }
 
 /// What `main` hands the app: its folders, the loaded settings and any notes from loading them.
@@ -289,6 +292,8 @@ impl VcApp {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
+        // Model icons are read from file:// URIs.
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let shared = Arc::new(Shared::new());
         let audio = AudioControl::spawn(shared.clone());
         let state = AppState::from_config(audio.list().unwrap_or_default(), &startup.config);
@@ -327,6 +332,7 @@ impl VcApp {
             notices: Vec::new(),
             convert_file: None,
             import_pick_rx: None,
+            models_ui: ModelsUi::default(),
         };
         // Load the last model; the app never starts streaming by itself.
         if let Some(id) = app.prefs.last_model.clone()
@@ -707,6 +713,7 @@ impl eframe::App for VcApp {
             || self.pending.is_some()
             || self.importer.is_busy()
             || self.import_pick_rx.is_some()
+            || self.models_ui.icon_pick.is_some()
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         }

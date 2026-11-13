@@ -1,10 +1,12 @@
-//! The voice model: picking an `.onnx` file and loading it on a background thread.
+//! The voice model: loading a pipeline, or only a new generator, on a background thread.
 
+use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-use vc_engine::{Pipeline, PipelineConfig, Provider, StreamSettings};
+use vc_engine::pipeline::frames_for;
+use vc_engine::{Generator, Pipeline, PipelineConfig, Provider, StreamSettings};
 
 use crate::tabs::voice::khz;
 
@@ -94,6 +96,14 @@ impl<P> ModelSlot<P> {
         }
     }
 
+    /// The ready model and its info, to swap the generator; `None` unless ready.
+    pub fn ready_mut(&mut self) -> Option<(&mut P, &mut ModelInfo)> {
+        match self {
+            Self::Ready(p, info) => Some((p, info)),
+            _ => None,
+        }
+    }
+
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready(..))
     }
@@ -127,20 +137,21 @@ pub fn provider_label(requested: Provider, active: Provider) -> String {
     }
 }
 
-/// Loads and warms up the model at `path` on a "vc-model-loader" thread.
+/// Loads and warms up the model `name` at `path` on a "vc-model-loader" thread.
 pub fn spawn_load(
+    name: String,
     path: PathBuf,
+    sr_override: Option<u32>,
     provider: Provider,
     settings: StreamSettings,
-) -> std::io::Result<Receiver<LoadResult<Pipeline>>> {
+) -> io::Result<Receiver<LoadResult<Pipeline>>> {
     let (tx, rx) = mpsc::channel();
     thread::Builder::new()
         .name("vc-model-loader".into())
         .spawn(move || {
-            let name = model_name(&path);
             let cfg = PipelineConfig {
                 model: path,
-                sr_override: None,
+                sr_override,
                 provider,
                 // The symmetric warm-up only needs the window's shape, not the stream's context.
                 warmup_len: settings.window_16k(),
@@ -162,28 +173,37 @@ pub fn spawn_load(
     Ok(rx)
 }
 
-/// File stem of a model path, used as its display name.
-pub fn model_name(path: &std::path::Path) -> String {
-    path.file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
-}
-
-/// Opens the native file picker on a "vc-file-dialog" thread; sends `None` when cancelled.
-/// rfd initialises COM, which must stay off the UI thread (see `main.rs`).
-/// A spawn failure yields a closed channel.
-pub fn pick_model() -> Receiver<Option<PathBuf>> {
+/// Loads and warms up only the generator of the model `name` at `path` on a "vc-gen-loader"
+/// thread, to swap into a loaded pipeline.
+pub fn spawn_generator_load(
+    name: String,
+    path: PathBuf,
+    sample_rate: u32,
+    provider: Provider,
+    settings: StreamSettings,
+) -> io::Result<Receiver<LoadResult<Generator>>> {
     let (tx, rx) = mpsc::channel();
-    let _ = thread::Builder::new()
-        .name("vc-file-dialog".into())
+    thread::Builder::new()
+        .name("vc-gen-loader".into())
         .spawn(move || {
-            let path = rfd::FileDialog::new()
-                .set_title("Choose an RVC v2 ONNX model")
-                .add_filter("RVC v2 ONNX model", &["onnx"])
-                .pick_file();
-            let _ = tx.send(path);
-        });
-    rx
+            let result = Generator::load(&path, provider, Some(sample_rate))
+                .and_then(|mut g| {
+                    g.warm_up(frames_for(settings.window_16k()))?;
+                    Ok(g)
+                })
+                .map(|g| {
+                    let info = ModelInfo {
+                        name,
+                        sample_rate: g.sample_rate(),
+                        requested: provider,
+                        active: g.active_provider(),
+                    };
+                    (g, info)
+                })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        })?;
+    Ok(rx)
 }
 
 #[cfg(test)]
@@ -294,11 +314,16 @@ mod tests {
     }
 
     #[test]
-    fn model_name_is_file_stem() {
-        assert_eq!(
-            model_name(std::path::Path::new(r"C:\models\Ana v2.onnx")),
-            "Ana v2"
-        );
+    fn ready_mut_only_when_ready() {
+        let mut slot = ModelSlot::Ready(7u32, info());
+        let (p, slot_info) = slot.ready_mut().expect("ready");
+        *p = 8;
+        slot_info.sample_rate = 48000;
+        assert!(matches!(&slot, ModelSlot::Ready(8, i) if i.sample_rate == 48000));
+        assert!(ModelSlot::<u32>::Empty.ready_mut().is_none());
+        assert!(loading().0.ready_mut().is_none());
+        assert!(ModelSlot::<u32>::InSession(info()).ready_mut().is_none());
+        assert!(ModelSlot::<u32>::Failed("bad".into()).ready_mut().is_none());
     }
 
     #[test]

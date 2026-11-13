@@ -5,19 +5,30 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use vc_audio::{
-    AudioSession, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Processor, Selection, Shared,
-    StreamStatus, db_to_gain, list_devices,
+    AudioControl, DeviceList, DeviceRef, Endpoint, Processor, Selection, SessionInfo, Shared,
+    StreamStatus, db_to_gain, start_blocker,
 };
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
+use crate::config::{Config, DevicesConfig, PerfConfig, Prefs, SaveTracker, SavedDevice};
+use vc_models::{Library, ModelEntry};
+
 use crate::engine::{EngineProcessor, ErrorSlot};
+use crate::files;
+use crate::hotkey::{Combo, Hotkeys};
+use crate::import::{DropAction, Importer, Notice, classify_drop};
 use crate::model::{self, ModelSlot, provider_label};
+use crate::paths::AppDirs;
 use crate::status_bar::{self, StatusSnapshot};
+use crate::switch::{PendingSwitch, SwitchPlan, pitch_for, plan_switch};
 use crate::tabs;
+use crate::tabs::models::ModelsUi;
+use crate::tabs::voice::start_hint;
 use crate::widgets::MeterState;
 
 /// Window title, including the app version.
@@ -46,9 +57,12 @@ pub fn banner_text(
     processor_error: Option<&str>,
 ) -> Option<String> {
     let device = |which| match which {
-        Endpoint::Input => ("input", sel.input.as_str()),
-        Endpoint::Cable => ("cable output", sel.cable.as_str()),
-        Endpoint::Monitor => ("monitor", sel.monitor.as_deref().unwrap_or_default()),
+        Endpoint::Input => ("input", sel.input.name.as_str()),
+        Endpoint::Cable => ("cable output", sel.cable.name.as_str()),
+        Endpoint::Monitor => (
+            "monitor",
+            sel.monitor.as_ref().map_or("", |m| m.name.as_str()),
+        ),
     };
     match status {
         StreamStatus::Running => None,
@@ -99,7 +113,8 @@ impl Tab {
 }
 
 /// Execution provider picked in Settings → Performance.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderChoice {
     #[default]
     DirectMl,
@@ -128,7 +143,8 @@ impl PerfSettings {
 }
 
 /// Voice tab controls, applied live to the running stream.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VoiceSettings {
     /// Pitch shift in semitones.
     pub pitch: i32,
@@ -163,15 +179,50 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Default selection for `devices`, default monitor volume, no notes.
-    pub fn new(devices: DeviceList) -> Self {
+    /// The saved choices matched against `devices`. A saved device that is gone falls back to its default
+    /// with a note; a device that was never saved takes its default silently.
+    pub fn from_config(devices: DeviceList, config: &Config) -> Self {
+        let saved = &config.devices;
+        let device = |d: &Option<SavedDevice>| d.clone().map(DeviceRef::from).unwrap_or_default();
+        let mut selection = Selection {
+            input: device(&saved.input),
+            cable: device(&saved.cable),
+            monitor: saved.monitor.clone().map(DeviceRef::from),
+            monitor_enabled: saved.monitor_enabled,
+        };
+        if selection.monitor.is_none() {
+            selection.monitor = Selection::defaults(&devices).monitor;
+        }
+        let notes = selection.reconcile(&devices);
         Self {
-            selection: Selection::defaults(&devices),
             devices,
-            monitor_db: DEFAULT_MONITOR_DB,
-            notes: Vec::new(),
-            perf: PerfSettings::default(),
-            voice: VoiceSettings::default(),
+            selection,
+            monitor_db: saved.monitor_db,
+            notes,
+            perf: config.perf.to_settings(),
+            voice: config.voice,
+        }
+    }
+
+    /// The saved form of this state, with the preferences kept outside it.
+    pub fn to_config(&self, prefs: &Prefs) -> Config {
+        let device = |r: &DeviceRef| (!r.is_empty()).then(|| SavedDevice::from(r));
+        let sel = &self.selection;
+        Config {
+            devices: DevicesConfig {
+                input: device(&sel.input),
+                cable: device(&sel.cable),
+                monitor: sel.monitor.as_ref().and_then(device),
+                monitor_enabled: sel.monitor_enabled,
+                monitor_db: self.monitor_db,
+            },
+            perf: PerfConfig::from_settings(&self.perf),
+            voice: self.voice,
+            last_model: prefs.last_model.clone(),
+            pitch_by_model: prefs.pitch_by_model.clone(),
+            hotkey: prefs.hotkey.clone(),
+            start_minimised: prefs.start_minimised,
+            ..Config::default()
         }
     }
 
@@ -186,7 +237,10 @@ impl AppState {
 pub struct VcApp {
     pub(crate) tab: Tab,
     pub(crate) state: AppState,
-    pub(crate) session: Option<AudioSession>,
+    /// The audio-control thread, which makes every cpal call.
+    pub(crate) audio: AudioControl,
+    /// The running session's sample rates; `Some` while running.
+    pub(crate) session_info: Option<SessionInfo>,
     /// Created once and reused by every session.
     shared: Arc<Shared>,
     /// Why audio stopped or could not start, shown on the Voice tab.
@@ -194,10 +248,8 @@ pub struct VcApp {
     pub(crate) input_meter: MeterState,
     pub(crate) output_meter: MeterState,
     pub(crate) model: ModelSlot<Pipeline>,
-    /// The last model file chosen, reloaded when the provider changes.
-    pub(crate) model_path: Option<PathBuf>,
-    /// The open file picker's answer.
-    pub(crate) pick_rx: Option<Receiver<Option<PathBuf>>>,
+    /// The library model whose generator is loading, to swap in when ready.
+    pub(crate) pending: Option<PendingSwitch>,
     /// Pitch and gate, read by the streamer once per block.
     controls: Arc<Controls>,
     /// Inference timings written by the streamer.
@@ -206,56 +258,290 @@ pub struct VcApp {
     processor_error: ErrorSlot,
     /// Set by a block, context or crossfade change; the stream restarts after this frame.
     pub(crate) restart_requested: bool,
+    /// Set once the dead-audio-thread banner has been shown, so dismissing it sticks.
+    audio_dead_shown: bool,
+    /// Where the settings, models and logs live.
+    pub(crate) dirs: AppDirs,
+    /// The saved preferences that live outside `state`.
+    pub(crate) prefs: Prefs,
+    /// Writes the settings a moment after they change.
+    save: SaveTracker,
+    /// The imported voice models.
+    pub(crate) library: Library,
+    /// Inspects and copies imported files in the background.
+    pub(crate) importer: Importer,
+    /// Messages on the Models tab, oldest first.
+    pub(crate) notices: Vec<Notice>,
+    /// The PyTorch file handed to the Convert tab.
+    pub(crate) convert_file: Option<PathBuf>,
+    /// The open Import… picker's answer.
+    pub(crate) import_pick_rx: Option<Receiver<Option<PathBuf>>>,
+    /// Renaming, delete confirmation and the icon picker on the Models tab.
+    pub(crate) models_ui: ModelsUi,
+    /// The global Start/Stop hotkey.
+    pub(crate) hotkeys: Hotkeys,
+    /// Set… was pressed; the next key combination becomes the hotkey.
+    pub(crate) recording_hotkey: bool,
+    /// Why the hotkey could not be parsed, recorded or registered.
+    pub(crate) hotkey_error: Option<String>,
+    pub(crate) show_about: bool,
+}
+
+/// What `main` hands the app: its folders, the loaded settings and any notes from loading them.
+pub struct Startup {
+    pub dirs: AppDirs,
+    pub config: Config,
+    pub notes: Vec<String>,
 }
 
 impl VcApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, startup: Startup) -> Self {
+        // egui 0.32's ViewportBuilder cannot open minimised; the command runs after the first frame.
+        if startup.config.start_minimised {
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        // Model icons are read from file:// URIs.
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+        let shared = Arc::new(Shared::new());
+        let audio = AudioControl::spawn(shared.clone());
+        let state = AppState::from_config(audio.list().unwrap_or_default(), &startup.config);
+        let (library, library_note) = Library::open(startup.dirs.models.clone());
+        let notes: Vec<&str> = startup
+            .notes
+            .iter()
+            .chain(&library_note)
+            .chain(&state.notes)
+            .map(String::as_str)
+            .collect();
+        let mut hotkeys = Hotkeys::new(&cc.egui_ctx);
+        // A saved hotkey that fails is kept, so it is tried again next launch.
+        let hotkey_error = startup.config.hotkey.as_deref().and_then(|s| {
+            Combo::parse(s)
+                .map_err(|e| e.to_string())
+                .and_then(|c| hotkeys.set(Some(c)))
+                .err()
+        });
+        let hotkey_note = hotkey_error.as_ref().map(|e| format!("Hotkey: {e}"));
+        let notes: Vec<&str> = notes.into_iter().chain(hotkey_note.as_deref()).collect();
+        let banner = (!notes.is_empty()).then(|| notes.join(" "));
+        let mut app = Self {
             tab: Tab::default(),
-            state: AppState::new(list_devices()),
-            session: None,
-            shared: Arc::new(Shared::new()),
-            banner: None,
+            state,
+            audio,
+            session_info: None,
+            shared,
+            banner,
             input_meter: MeterState::default(),
             output_meter: MeterState::default(),
             model: ModelSlot::default(),
-            model_path: None,
-            pick_rx: None,
+            pending: None,
             controls: Arc::new(Controls::new()),
             stats: Arc::new(StreamStats::new()),
             processor_error: ErrorSlot::default(),
             restart_requested: false,
+            audio_dead_shown: false,
+            dirs: startup.dirs,
+            prefs: Prefs::from_config(&startup.config),
+            save: SaveTracker::new(startup.config),
+            library,
+            importer: Importer::new(Arc::new(|p| {
+                vc_engine::inspect_model(p).map_err(|e| e.to_string())
+            })),
+            notices: Vec::new(),
+            convert_file: None,
+            import_pick_rx: None,
+            models_ui: ModelsUi::default(),
+            hotkeys,
+            recording_hotkey: false,
+            hotkey_error,
+            show_about: false,
+        };
+        // Load the last model; the app never starts streaming by itself.
+        if let Some(id) = app.prefs.last_model.clone()
+            && app.library.get(&id).is_some()
+        {
+            app.select_model(&id);
+        }
+        app
+    }
+
+    /// Opens the Import… picker; its answer is polled in `update`.
+    pub(crate) fn pick_import(&mut self) {
+        self.import_pick_rx = Some(files::pick_file(
+            "Import a voice model",
+            "Voice models",
+            &["onnx", "pth", "zip"],
+        ));
+    }
+
+    /// Imports, offers to convert or rejects a dropped or picked file.
+    pub(crate) fn receive_file(&mut self, path: PathBuf) {
+        match classify_drop(&path) {
+            DropAction::Import(path) => self.importer.enqueue(path),
+            DropAction::OfferConvert(path) => self.notices.push(Notice::OfferConvert(path)),
+            DropAction::Reject(msg) => self.notices.push(Notice::Error(msg)),
         }
     }
 
-    /// Opens the model file picker; its answer is polled in `update`.
-    pub(crate) fn pick_model(&mut self) {
-        self.pick_rx = Some(model::pick_model());
+    /// Takes files dropped on the window; any drop opens the Models tab.
+    fn handle_drops(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        self.tab = Tab::Models;
+        for path in dropped.into_iter().filter_map(|f| f.path) {
+            self.receive_file(path);
+        }
     }
 
-    /// Starts loading the model at `path` with the current Performance settings.
-    pub(crate) fn load_model(&mut self, path: PathBuf) {
-        let name = model::model_name(&path);
-        let perf = self.state.perf;
-        self.model = match model::spawn_load(path.clone(), perf.provider(), perf.stream) {
-            Ok(rx) => ModelSlot::loading(name, rx),
-            Err(e) => ModelSlot::Failed(e.to_string()),
-        };
-        self.model_path = Some(path);
-    }
-
-    /// Picks up the file picker's answer and the loader's result.
-    fn poll_model(&mut self) {
-        if let Some(rx) = &self.pick_rx {
+    /// Picks up the Import… picker's answer and the importer's results.
+    fn poll_import(&mut self) {
+        if let Some(rx) = &self.import_pick_rx {
             match rx.try_recv() {
                 Ok(Some(path)) => {
-                    self.pick_rx = None;
-                    self.load_model(path);
+                    self.import_pick_rx = None;
+                    self.receive_file(path);
                 }
-                Ok(None) | Err(TryRecvError::Disconnected) => self.pick_rx = None,
+                Ok(None) | Err(TryRecvError::Disconnected) => self.import_pick_rx = None,
                 Err(TryRecvError::Empty) => {}
             }
         }
+        for result in self.importer.poll(&mut self.library) {
+            self.notices.push(match result {
+                Ok(id) => {
+                    let name = self.library.get(&id).map_or(id.as_str(), |e| &e.name);
+                    Notice::Info(format!("Imported \"{name}\"."))
+                }
+                Err(msg) => Notice::Error(msg),
+            });
+        }
+    }
+
+    /// Writes the settings; a failure is logged and not retried until they change again.
+    fn write_config(&mut self, cfg: Config) {
+        let path = self.dirs.settings_file();
+        if let Err(e) = cfg.save(&path) {
+            tracing::warn!("cannot save {}: {e}", path.display());
+        }
+        self.save.mark_saved(cfg);
+    }
+
+    /// Makes the library model `id` the active one: loads it, or loads its generator to swap in
+    /// (also while running). The newest request wins.
+    pub(crate) fn select_model(&mut self, id: &str) {
+        let Some(entry) = self.library.get(id).cloned() else {
+            return;
+        };
+        if !self.library.file_exists(&entry) {
+            self.banner = Some(format!("The model file for \"{}\" is missing.", entry.name));
+            return;
+        }
+        if self.prefs.last_model.as_deref() == Some(id) && self.model.info().is_some() {
+            // Already active.
+            self.pending = None;
+            return;
+        }
+        let (path, perf) = (self.library.model_path(&entry), self.state.perf);
+        match plan_switch(self.model.info().is_some(), self.is_running()) {
+            SwitchPlan::LoadAll => {
+                self.pending = None;
+                self.model = match model::spawn_load(
+                    entry.name.clone(),
+                    path,
+                    Some(entry.sample_rate),
+                    perf.provider(),
+                    perf.stream,
+                ) {
+                    Ok(rx) => ModelSlot::loading(entry.name.clone(), rx),
+                    Err(e) => ModelSlot::Failed(e.to_string()),
+                };
+                self.activate(&entry);
+            }
+            SwitchPlan::Swap | SwitchPlan::SwapWithRestart => {
+                match model::spawn_generator_load(
+                    entry.name.clone(),
+                    path,
+                    entry.sample_rate,
+                    perf.provider(),
+                    perf.stream,
+                ) {
+                    // Replacing the pending switch drops the older loader's receiver.
+                    Ok(rx) => {
+                        self.pending = Some(PendingSwitch {
+                            id: entry.id.clone(),
+                            name: entry.name.clone(),
+                            rx,
+                        });
+                    }
+                    Err(e) => {
+                        self.banner = Some(format!("Could not switch to \"{}\": {e}", entry.name));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remembers `entry` as the last model and sets its pitch.
+    fn activate(&mut self, entry: &ModelEntry) {
+        self.prefs.last_model = Some(entry.id.clone());
+        self.state.voice.pitch =
+            pitch_for(&entry.id, &self.prefs.pitch_by_model, entry.default_pitch);
+    }
+
+    /// Swaps in a pending generator once it is loaded, with a quick stop and start while running.
+    /// A failed load keeps the old voice.
+    fn poll_switch(&mut self) {
+        let Some(pending) = &self.pending else {
+            return;
+        };
+        let result = match pending.rx.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                Err("the model loader stopped unexpectedly".to_string())
+            }
+            Ok(result) => result,
+        };
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        let (generator, info) = match result {
+            Ok(loaded) => loaded,
+            Err(msg) => {
+                self.banner = Some(format!("Could not switch to \"{}\": {msg}", pending.name));
+                return;
+            }
+        };
+        let running = self.is_running();
+        if running {
+            self.stop();
+        }
+        if let Some((p, slot_info)) = self.model.ready_mut() {
+            drop(p.swap_generator(generator));
+            *slot_info = info;
+            if let Some(entry) = self.library.get(&pending.id).cloned() {
+                self.activate(&entry);
+            }
+        } else {
+            self.banner = Some("Could not switch: the model was unloaded.".to_string());
+        }
+        if running {
+            self.start();
+        }
+    }
+
+    /// Saves the pitch slider's value for the active model.
+    pub(crate) fn pitch_changed(&mut self) {
+        if let Some(id) = &self.prefs.last_model {
+            self.prefs
+                .pitch_by_model
+                .insert(id.clone(), self.state.voice.pitch);
+        }
+    }
+
+    /// Picks up the loader's result.
+    fn poll_model(&mut self) {
         if let Some(Err(msg)) = self.model.poll() {
             self.banner = Some(format!("Could not load the model: {msg}"));
         }
@@ -263,11 +549,12 @@ impl VcApp {
 
     /// Re-enumerates the audio devices.
     pub(crate) fn refresh_devices(&mut self) {
-        self.state.refresh_with(list_devices());
+        self.state
+            .refresh_with(self.audio.list().unwrap_or_default());
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        self.session.is_some()
+        self.session_info.is_some()
     }
 
     /// Streams the loaded model with the current selection; on failure, the banner says why.
@@ -287,12 +574,8 @@ impl VcApp {
             self.stats.clone(),
         );
         let processor = EngineProcessor::new(streamer, self.processor_error.clone());
-        match AudioSession::start(
-            &self.state.selection,
-            self.shared.clone(),
-            Box::new(processor),
-        ) {
-            Ok(session) => self.session = Some(session),
+        match self.audio.start(&self.state.selection, Box::new(processor)) {
+            Ok(info) => self.session_info = Some(info),
             Err((e, back)) => {
                 self.recover(back);
                 let text = format!("Could not start audio: {e}");
@@ -304,10 +587,25 @@ impl VcApp {
         }
     }
 
+    /// The hotkey stops a running session, or starts one when Start could be pressed.
+    fn toggle_from_hotkey(&mut self) {
+        if self.is_running() {
+            self.stop();
+        } else if let Some(hint) = start_hint(
+            self.audio.is_alive(),
+            start_blocker(&self.state.devices, &self.state.selection),
+            self.model.is_ready(),
+        ) {
+            self.banner = Some(format!("Hotkey: cannot start. {hint}"));
+        } else {
+            self.start();
+        }
+    }
+
     /// Stops audio, takes the model back and clears the meters.
     pub(crate) fn stop(&mut self) {
-        if let Some(s) = self.session.take() {
-            let back = s.stop();
+        if self.session_info.take().is_some() {
+            let back = self.audio.stop();
             self.recover(back);
         }
         self.input_meter.reset();
@@ -384,15 +682,28 @@ impl VcApp {
     }
 }
 
+/// Banner and Start hint when the audio-control thread has died.
+pub(crate) const AUDIO_DEAD: &str = "The audio thread stopped unexpectedly. Restart VoiceChanger.";
+
 /// Banner text when a stopped session did not hand the model back.
-const MODEL_LOST: &str = "The model was unloaded; choose it again with Model…";
+const MODEL_LOST: &str = "The model was unloaded; choose it again from the Model list.";
 
 impl eframe::App for VcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.audio_dead_shown && !self.audio.is_alive() {
+            self.audio_dead_shown = true;
+            self.banner = Some(AUDIO_DEAD.to_string());
+        }
         self.poll_status();
         self.poll_model();
+        self.poll_switch();
+        self.handle_drops(ctx);
+        self.poll_import();
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
+        if self.hotkeys.take_pressed() {
+            self.toggle_from_hotkey();
+        }
         self.push_voice();
         if self.is_running() {
             let dt = ctx.input(|i| i.stable_dt);
@@ -417,8 +728,8 @@ impl eframe::App for VcApp {
         }
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Voice => tabs::voice::show(ui, self),
-            Tab::Models => tabs::models::show(ui),
-            Tab::Convert => tabs::convert::show(ui),
+            Tab::Models => tabs::models::show(ui, self),
+            Tab::Convert => tabs::convert::show(ui, self),
             Tab::Settings => tabs::settings::show(ui, self),
         });
         // Block, context and crossfade restart the stream on release; the model is kept.
@@ -430,22 +741,47 @@ impl eframe::App for VcApp {
         // A new provider or GPU needs a fresh session, so the model is reloaded.
         if self.state.perf.provider() != provider_before
             && !self.is_running()
-            && let Some(path) = &self.model_path
+            && let Some(id) = self.prefs.last_model.clone()
         {
-            self.load_model(path.clone());
+            self.pending = None;
+            self.model = ModelSlot::Empty;
+            self.select_model(&id);
         }
 
         if self.is_running() {
             ctx.request_repaint_after(Duration::from_millis(33));
-        } else if self.model.is_loading() || self.pick_rx.is_some() {
+        } else if self.model.is_loading()
+            || self.pending.is_some()
+            || self.importer.is_busy()
+            || self.import_pick_rx.is_some()
+            || self.models_ui.icon_pick.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+
+        let cfg = self.state.to_config(&self.prefs);
+        if self.save.poll(&cfg, Instant::now()) {
+            self.write_config(cfg);
+        }
+        if self.save.is_pending() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let cfg = self.state.to_config(&self.prefs);
+        if self.save.needs_save(&cfg) {
+            self.write_config(cfg);
+        }
+        self.stop();
+        self.audio.shutdown();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vc_audio::{DEFAULT_MONITOR_DB, DeviceInfo};
 
     #[test]
     fn window_title_has_version() {
@@ -475,7 +811,7 @@ mod tests {
             Some("USB Mic".into()),
             Some("Headphones".into()),
         );
-        let mut state = AppState::new(list.clone());
+        let mut state = AppState::from_config(list.clone(), &Config::default());
         assert_eq!(state.devices, list);
         assert_eq!(state.selection, Selection::defaults(&list));
         assert_eq!(state.monitor_db, DEFAULT_MONITOR_DB);
@@ -489,15 +825,22 @@ mod tests {
         );
         state.refresh_with(unplugged.clone());
         assert_eq!(state.devices, unplugged);
-        assert_eq!(state.selection.input, "Microphone (Realtek)");
+        assert_eq!(state.selection.input.name, "Microphone (Realtek)");
         assert_eq!(state.notes.len(), 1);
+    }
+
+    fn device(name: &str) -> DeviceRef {
+        DeviceRef {
+            id: format!("{{id}}.{name}"),
+            name: name.into(),
+        }
     }
 
     fn selection() -> Selection {
         Selection {
-            input: "USB Mic".into(),
-            cable: "CABLE Input (VB-Audio Virtual Cable)".into(),
-            monitor: Some("Headphones".into()),
+            input: device("USB Mic"),
+            cable: device("CABLE Input (VB-Audio Virtual Cable)"),
+            monitor: Some(device("Headphones")),
             monitor_enabled: true,
         }
     }
@@ -581,8 +924,138 @@ mod tests {
         assert_eq!(voice.input_db, 0.0);
         assert_eq!(voice.output_db, 0.0);
         assert_eq!(voice.gate_db, -50.0);
-        let state = AppState::new(DeviceList::from_names(vec![], vec![], None, None));
+        let state = AppState::from_config(
+            DeviceList::from_names(vec![], vec![], None, None),
+            &Config::default(),
+        );
         assert_eq!(state.voice, voice);
+    }
+
+    fn info(id: &str, name: &str) -> DeviceInfo {
+        DeviceInfo {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    fn saved(id: &str, name: &str) -> Option<SavedDevice> {
+        Some(SavedDevice {
+            id: id.into(),
+            name: name.into(),
+        })
+    }
+
+    /// One mic, a cable and headphones, each with its own endpoint ID.
+    fn id_list() -> DeviceList {
+        DeviceList::new(
+            vec![
+                info("{mic}", "USB Mic"),
+                info("{rtk}", "Microphone (Realtek)"),
+            ],
+            vec![
+                info("{hp}", "Headphones"),
+                info("{cable}", "CABLE Input (VB-Audio Virtual Cable)"),
+            ],
+            Some(DeviceRef {
+                id: "{rtk}".into(),
+                name: "Microphone (Realtek)".into(),
+            }),
+            Some(DeviceRef {
+                id: "{hp}".into(),
+                name: "Headphones".into(),
+            }),
+        )
+    }
+
+    fn saved_config() -> Config {
+        Config {
+            devices: DevicesConfig {
+                input: saved("{mic}", "USB Mic"),
+                cable: saved("{cable}", "CABLE Input (VB-Audio Virtual Cable)"),
+                monitor: saved("{hp}", "Headphones"),
+                monitor_enabled: true,
+                monitor_db: -7.5,
+            },
+            perf: PerfConfig {
+                provider: ProviderChoice::Cpu,
+                gpu: 1,
+                block_ms: 300,
+                context_ms: 400,
+                crossfade_ms: 60,
+            },
+            voice: VoiceSettings {
+                pitch: -4,
+                input_db: 3.0,
+                output_db: -2.0,
+                gate_db: -42.0,
+            },
+            last_model: Some("ana".into()),
+            pitch_by_model: [("ana".to_string(), -4)].into(),
+            hotkey: Some("Ctrl+Alt+V".into()),
+            start_minimised: true,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn state_from_config_restores() {
+        let mut config = saved_config();
+        // Same endpoint, renamed since the last launch.
+        config.devices.input = saved("{mic}", "Old Mic Name");
+        let state = AppState::from_config(id_list(), &config);
+        assert!(state.notes.is_empty(), "{:?}", state.notes);
+        assert_eq!(
+            state.selection,
+            Selection {
+                input: DeviceRef {
+                    id: "{mic}".into(),
+                    name: "USB Mic".into(),
+                },
+                cable: DeviceRef {
+                    id: "{cable}".into(),
+                    name: "CABLE Input (VB-Audio Virtual Cable)".into(),
+                },
+                monitor: Some(DeviceRef {
+                    id: "{hp}".into(),
+                    name: "Headphones".into(),
+                }),
+                monitor_enabled: true,
+            }
+        );
+        assert_eq!(state.monitor_db, -7.5);
+        assert_eq!(state.perf, config.perf.to_settings());
+        assert_eq!(state.voice, config.voice);
+        assert_eq!(state.devices, id_list());
+    }
+
+    #[test]
+    fn state_from_config_missing_device_notes() {
+        let mut config = saved_config();
+        config.devices.input = saved("{gone}", "Unplugged Mic");
+        let state = AppState::from_config(id_list(), &config);
+        assert_eq!(
+            state.notes,
+            [
+                "Input \"Unplugged Mic\" is no longer available; switched to \
+                 \"Microphone (Realtek)\"."
+            ]
+        );
+        assert_eq!(state.selection.input.id, "{rtk}");
+        assert_eq!(state.selection.cable.id, "{cable}");
+    }
+
+    #[test]
+    fn state_from_config_without_saved_devices_takes_defaults() {
+        let state = AppState::from_config(id_list(), &Config::default());
+        assert!(state.notes.is_empty(), "{:?}", state.notes);
+        assert_eq!(state.selection, Selection::defaults(&id_list()));
+    }
+
+    #[test]
+    fn to_config_round_trip() {
+        let config = saved_config();
+        let state = AppState::from_config(id_list(), &config);
+        assert_eq!(state.to_config(&Prefs::from_config(&config)), config);
     }
 
     #[test]

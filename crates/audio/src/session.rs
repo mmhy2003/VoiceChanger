@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
-use crate::devices::Selection;
+use crate::devices::{DeviceRef, Selection};
 use crate::processor::Processor;
 use crate::ring::{self, HeapCons, HeapProd};
 use crate::shared::{Endpoint, Shared, StreamStatus};
@@ -74,14 +74,24 @@ struct Opened {
     config: cpal::StreamConfig,
 }
 
-fn find<I>(devices: Result<I, cpal::DevicesError>, name: &str) -> Result<cpal::Device, StartError>
+/// The device `r` refers to: by endpoint ID first, then by name among `devices`.
+fn find<I>(
+    host: &cpal::Host,
+    devices: Result<I, cpal::DevicesError>,
+    r: &DeviceRef,
+) -> Result<cpal::Device, StartError>
 where
     I: Iterator<Item = cpal::Device>,
 {
+    if let Ok(id) = r.id.parse::<cpal::DeviceId>()
+        && let Some(d) = host.device_by_id(&id)
+    {
+        return Ok(d);
+    }
     devices
         .ok()
-        .and_then(|mut ds| ds.find(|d| d.name().is_ok_and(|n| n == name)))
-        .ok_or_else(|| StartError::DeviceNotFound(name.to_string()))
+        .and_then(|mut ds| ds.find(|d| d.description().is_ok_and(|desc| desc.name() == r.name)))
+        .ok_or_else(|| StartError::DeviceNotFound(r.name.clone()))
 }
 
 fn open(device: cpal::Device, name: &str, input: bool) -> Result<Opened, StartError> {
@@ -99,7 +109,7 @@ fn open(device: cpal::Device, name: &str, input: bool) -> Result<Opened, StartEr
         name: name.to_string(),
         format: config.sample_format(),
         channels: usize::from(config.channels()),
-        rate: config.sample_rate().0,
+        rate: config.sample_rate(),
         config: config.config(),
     })
 }
@@ -200,20 +210,21 @@ fn output_stream(
 type OpenedDevices = (Opened, Vec<(OutputKind, Endpoint, Opened)>);
 
 fn open_devices(sel: &Selection) -> Result<OpenedDevices, StartError> {
+    crate::com::keep_alive();
     let host = cpal::host_from_id(cpal::HostId::Wasapi).map_err(|e| build_error("WASAPI", e))?;
 
-    let input_dev = find(host.input_devices(), &sel.input)?;
-    let cable_dev = find(host.output_devices(), &sel.cable)?;
+    let input_dev = find(&host, host.input_devices(), &sel.input)?;
+    let cable_dev = find(&host, host.output_devices(), &sel.cable)?;
     let monitor_dev = match (&sel.monitor, sel.monitor_enabled) {
-        (Some(name), true) => Some((find(host.output_devices(), name)?, name)),
+        (Some(r), true) => Some((find(&host, host.output_devices(), r)?, &r.name)),
         _ => None,
     };
 
-    let input = open(input_dev, &sel.input, true)?;
+    let input = open(input_dev, &sel.input.name, true)?;
     let mut outputs = vec![(
         OutputKind::Cable,
         Endpoint::Cable,
-        open(cable_dev, &sel.cable, false)?,
+        open(cable_dev, &sel.cable.name, false)?,
     )];
     if let Some((dev, name)) = monitor_dev {
         let monitor = open(dev, name, false)?;
@@ -268,7 +279,7 @@ impl AudioSession {
         )
         .map_err(|(reason, p)| {
             let e = StartError::UnsupportedConfig {
-                device: sel.input.clone(),
+                device: sel.input.name.clone(),
                 reason,
             };
             (e, Some(p))
@@ -357,7 +368,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::devices::Selection;
+    use crate::devices::{DeviceRef, Selection};
     use crate::processor::Passthrough;
     use crate::shared::{Endpoint, Shared, StreamStatus};
 
@@ -389,7 +400,10 @@ mod tests {
     #[test]
     fn start_unknown_input_is_device_not_found() {
         let sel = Selection {
-            input: "No Such Device 7f3a".into(),
+            input: DeviceRef {
+                id: String::new(),
+                name: "No Such Device 7f3a".into(),
+            },
             ..Selection::default()
         };
         let processor = Box::new(Passthrough::new(48_000));

@@ -84,6 +84,12 @@ impl Pipeline {
         self.generator.active_provider()
     }
 
+    /// Replaces the generator and returns the old one. ContentVec and RMVPE stay loaded; the
+    /// caller warms the new generator up first (see [`Generator::warm_up`]).
+    pub fn swap_generator(&mut self, generator: Generator) -> Generator {
+        std::mem::replace(&mut self.generator, generator)
+    }
+
     pub fn warmup_time(&self) -> Duration {
         self.warmup
     }

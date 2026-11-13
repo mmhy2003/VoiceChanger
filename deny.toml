@@ -26,6 +26,10 @@ allow = [
 ]
 confidence-threshold = 0.8
 unused-allowed-license = "allow"
+exceptions = [
+    # dirs -> dirs-sys; MPL-2.0 is file-level copyleft and the crate is used unmodified.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+]
 
 [bans]
 multiple-versions = "warn"

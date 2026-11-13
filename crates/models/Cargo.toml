@@ -9,3 +9,8 @@ authors.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+thiserror = "2"

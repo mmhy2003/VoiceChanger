@@ -1,12 +1,13 @@
 //! End-to-end conversion with a user-supplied RVC v2 model (`VC_TEST_MODEL`).
 
 use std::f32::consts::TAU;
+use std::path::Path;
 use std::sync::Arc;
 
 use vc_engine::offline::{read_wav_mono, write_wav_f32};
 use vc_engine::{
-    Controls, ConvertOptions, Pipeline, PipelineConfig, Provider, StreamSettings, StreamStats,
-    Streamer, convert_file,
+    Controls, ConvertOptions, Generator, Params, Pipeline, PipelineConfig, Provider,
+    StreamSettings, StreamStats, Streamer, convert_file,
 };
 
 const SR: u32 = 16_000;
@@ -107,4 +108,30 @@ fn streams_voiced_signal() {
     let half = &out[out.len() / 2..];
     let rms = (half.iter().map(|v| v * v).sum::<f32>() / half.len() as f32).sqrt();
     assert!(rms > 1e-3, "rms {rms}");
+}
+
+#[test]
+#[ignore = "needs VC_TEST_MODEL (an RVC v2 WebUI ONNX export) and `cargo xtask fetch-models`"]
+fn swaps_generator() {
+    let settings = StreamSettings::default();
+    let mut pipeline = Pipeline::new(&PipelineConfig {
+        model: test_model().into(),
+        sr_override: test_model_sr(),
+        provider: Provider::Cpu,
+        warmup_len: settings.window_16k(),
+        warmup_context: 0,
+    })
+    .unwrap();
+    let mut g = Generator::load(Path::new(&test_model()), Provider::Cpu, test_model_sr()).unwrap();
+    g.warm_up(vc_engine::pipeline::frames_for(settings.window_16k()))
+        .unwrap();
+
+    let old = pipeline.swap_generator(g);
+    assert_eq!(old.sample_rate(), pipeline.sample_rate());
+
+    let out = pipeline
+        .convert(&vec![0.0; 16_000], 0, &Params::default())
+        .unwrap();
+    assert_eq!(out.len(), pipeline.sample_rate() as usize);
+    assert!(out.iter().all(|v| v.is_finite()));
 }

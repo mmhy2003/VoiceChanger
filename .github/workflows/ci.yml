@@ -5,12 +5,14 @@ on:
     branches: [develop, main]
   pull_request:
     branches: [develop, main]
+  workflow_call: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow is the caller's name under workflow_call, so release.yml never cancels CI on main.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -45,11 +47,30 @@ jobs:
         run: cargo test --workspace
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny,cargo-about
       - name: Licences and advisories
         run: cargo deny check
       - name: Release build
         run: cargo build --release
+      - name: Installer version
+        id: installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(bash .github/scripts/version.sh read)
+          echo "display=$version-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "file=$version.0" >> "$GITHUB_OUTPUT"
+      - name: Installer (smoke build)
+        shell: pwsh
+        run: ./installer/build.ps1 -Version '${{ steps.installer.outputs.display }}' -FileVersion '${{ steps.installer.outputs.file }}'
+      - name: Upload develop installer
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceChanger-${{ steps.installer.outputs.display }}
+          path: dist/Setup-VoiceChanger-${{ steps.installer.outputs.display }}.exe
+          retention-days: 14
+          if-no-files-found: error
 
   fuzz:
     runs-on: ubuntu-latest

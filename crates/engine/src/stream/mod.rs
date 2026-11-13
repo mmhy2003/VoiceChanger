@@ -4,7 +4,9 @@
 pub mod settings;
 pub mod sola;
 pub mod stats;
+pub mod streamer;
 
 pub use settings::{Controls, StreamSettings};
 pub use sola::Sola;
 pub use stats::StreamStats;
+pub use streamer::{Convert, Streamer};

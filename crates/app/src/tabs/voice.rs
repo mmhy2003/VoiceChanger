@@ -1,4 +1,4 @@
-//! Voice tab: model picker, Start/Stop, level meters, status and the device-loss banner.
+//! Voice tab: model picker, Start/Stop, live voice controls, level meters, status and the banner.
 
 use eframe::egui;
 use vc_audio::{AudioSession, SessionInfo, start_blocker};
@@ -34,16 +34,41 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
         }
     } else {
         let blocker = start_blocker(&app.state.devices, &app.state.selection);
+        let ready = app.model.is_ready();
         if ui
-            .add_enabled(blocker.is_none(), egui::Button::new("▶ Start"))
+            .add_enabled(ready && blocker.is_none(), egui::Button::new("▶ Start"))
             .clicked()
         {
             app.start();
         }
         if let Some(blocker) = blocker {
             ui.label(blocker);
+        } else if !ready {
+            ui.label("Pick a model first");
         }
     }
+
+    let voice = &mut app.state.voice;
+    ui.add(
+        egui::Slider::new(&mut voice.pitch, -24..=24)
+            .text("Pitch")
+            .suffix(" st"),
+    );
+    ui.add(
+        egui::Slider::new(&mut voice.input_db, -20.0..=20.0)
+            .text("Input gain")
+            .suffix(" dB"),
+    );
+    ui.add(
+        egui::Slider::new(&mut voice.output_db, -20.0..=20.0)
+            .text("Output gain")
+            .suffix(" dB"),
+    );
+    ui.add(
+        egui::Slider::new(&mut voice.gate_db, -90.0..=-20.0)
+            .text("Noise gate")
+            .suffix(" dB"),
+    );
 
     widgets::meter(ui, "Input", app.input_meter.shown);
     widgets::meter(ui, "Output", app.output_meter.shown);

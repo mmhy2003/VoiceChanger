@@ -1,17 +1,19 @@
 //! Top-level app state and the tab bar.
 
+use std::any::Any;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use eframe::egui;
 use vc_audio::{
-    AudioSession, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Selection, Shared, StreamStatus,
-    db_to_gain, list_devices,
+    AudioSession, DEFAULT_MONITOR_DB, DeviceList, Endpoint, Processor, Selection, Shared,
+    StreamStatus, db_to_gain, list_devices,
 };
-use vc_engine::{Pipeline, Provider, StreamSettings};
+use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
+use crate::engine::{EngineProcessor, ErrorSlot};
 use crate::model::{self, ModelSlot};
 use crate::tabs;
 use crate::widgets::MeterState;
@@ -127,6 +129,28 @@ impl PerfSettings {
     }
 }
 
+/// Voice tab controls, applied live to the running stream.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceSettings {
+    /// Pitch shift in semitones.
+    pub pitch: i32,
+    pub input_db: f32,
+    pub output_db: f32,
+    /// Noise gate threshold in dB.
+    pub gate_db: f32,
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self {
+            pitch: 0,
+            input_db: 0.0,
+            output_db: 0.0,
+            gate_db: -50.0,
+        }
+    }
+}
+
 /// Device list and the user's choices, kept apart from the UI so it can be tested without hardware.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
@@ -137,6 +161,7 @@ pub struct AppState {
     /// Messages from the last Refresh, e.g. a selected device that disappeared.
     pub notes: Vec<String>,
     pub perf: PerfSettings,
+    pub voice: VoiceSettings,
 }
 
 impl AppState {
@@ -148,6 +173,7 @@ impl AppState {
             monitor_db: DEFAULT_MONITOR_DB,
             notes: Vec::new(),
             perf: PerfSettings::default(),
+            voice: VoiceSettings::default(),
         }
     }
 
@@ -174,6 +200,12 @@ pub struct VcApp {
     pub(crate) model_path: Option<PathBuf>,
     /// The open file picker's answer.
     pub(crate) pick_rx: Option<Receiver<Option<PathBuf>>>,
+    /// Pitch and gate, read by the streamer once per block.
+    controls: Arc<Controls>,
+    /// Inference timings written by the streamer.
+    stats: Arc<StreamStats>,
+    /// Why the voice processor failed, for the banner.
+    processor_error: ErrorSlot,
 }
 
 impl VcApp {
@@ -189,6 +221,9 @@ impl VcApp {
             model: ModelSlot::default(),
             model_path: None,
             pick_rx: None,
+            controls: Arc::new(Controls::new()),
+            stats: Arc::new(StreamStats::new()),
+            processor_error: ErrorSlot::default(),
         }
     }
 
@@ -234,23 +269,64 @@ impl VcApp {
         self.session.is_some()
     }
 
-    /// Starts audio with the current selection; on failure, the banner says why.
+    /// Streams the loaded model with the current selection; on failure, the banner says why.
     pub(crate) fn start(&mut self) {
         self.banner = None;
-        let processor = Box::new(vc_audio::Passthrough::new(48_000));
-        match AudioSession::start(&self.state.selection, self.shared.clone(), processor) {
+        let Some(pipeline) = self.model.take() else {
+            return;
+        };
+        *self
+            .processor_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        let streamer = Streamer::new(
+            pipeline,
+            self.state.perf.stream,
+            self.controls.clone(),
+            self.stats.clone(),
+        );
+        let processor = EngineProcessor::new(streamer, self.processor_error.clone());
+        match AudioSession::start(
+            &self.state.selection,
+            self.shared.clone(),
+            Box::new(processor),
+        ) {
             Ok(session) => self.session = Some(session),
-            Err((e, _)) => self.banner = Some(format!("Could not start audio: {e}")),
+            Err((e, back)) => {
+                self.recover(back);
+                let text = format!("Could not start audio: {e}");
+                self.banner = Some(match self.banner.take() {
+                    Some(lost) => format!("{text}. {lost}"),
+                    None => text,
+                });
+            }
         }
     }
 
-    /// Stops audio and clears the meters.
+    /// Stops audio, takes the model back and clears the meters.
     pub(crate) fn stop(&mut self) {
         if let Some(s) = self.session.take() {
-            let _ = s.stop();
+            let back = s.stop();
+            self.recover(back);
         }
         self.input_meter.reset();
         self.output_meter.reset();
+    }
+
+    /// Returns the pipeline inside a stopped session's processor to the model slot.
+    fn recover(&mut self, p: Option<Box<dyn Processor>>) {
+        let ep = p.and_then(|p| {
+            (p as Box<dyn Any>)
+                .downcast::<EngineProcessor<Pipeline>>()
+                .ok()
+        });
+        match ep {
+            Some(ep) => self.model.give_back(ep.into_inner()),
+            None => {
+                self.model.lost();
+                self.banner = Some(MODEL_LOST.to_string());
+            }
+        }
     }
 
     /// Stops a session whose device was lost or failed, and says why in the banner.
@@ -258,13 +334,37 @@ impl VcApp {
         if !self.is_running() {
             return;
         }
-        if let Some(text) = banner_text(self.shared.status(), &self.state.selection, None) {
+        let error = self
+            .processor_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(text) = banner_text(
+            self.shared.status(),
+            &self.state.selection,
+            error.as_deref(),
+        ) {
             self.stop();
-            self.banner = Some(text);
+            self.banner = Some(match self.banner.take() {
+                Some(lost) => format!("{text} {lost}"),
+                None => text,
+            });
             self.refresh_devices();
         }
     }
+
+    /// Applies the Voice tab controls to the stream; they take effect on the next block.
+    fn push_voice(&self) {
+        let voice = self.state.voice;
+        self.controls.set_pitch(voice.pitch as f32);
+        self.controls.set_gate_db(voice.gate_db);
+        self.shared.set_input_gain(db_to_gain(voice.input_db));
+        self.shared.set_output_gain(db_to_gain(voice.output_db));
+    }
 }
+
+/// Banner text when a stopped session did not hand the model back.
+const MODEL_LOST: &str = "The model was unloaded; choose it again with Model…";
 
 impl eframe::App for VcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -272,6 +372,7 @@ impl eframe::App for VcApp {
         self.poll_model();
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
+        self.push_voice();
         if self.is_running() {
             let dt = ctx.input(|i| i.stable_dt);
             self.input_meter
@@ -437,6 +538,17 @@ mod tests {
         assert_eq!(perf.provider(), Provider::Cuda { device: 2 });
         perf.provider = ProviderChoice::Cpu;
         assert_eq!(perf.provider(), Provider::Cpu);
+    }
+
+    #[test]
+    fn voice_defaults() {
+        let voice = VoiceSettings::default();
+        assert_eq!(voice.pitch, 0);
+        assert_eq!(voice.input_db, 0.0);
+        assert_eq!(voice.output_db, 0.0);
+        assert_eq!(voice.gate_db, -50.0);
+        let state = AppState::new(DeviceList::from_names(vec![], vec![], None, None));
+        assert_eq!(state.voice, voice);
     }
 
     #[test]

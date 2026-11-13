@@ -2,6 +2,7 @@
 //! VoiceChanger desktop app.
 
 mod app;
+mod engine;
 mod model;
 mod tabs;
 mod widgets;
@@ -9,6 +10,10 @@ mod widgets;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(std::io::stderr)
+        .init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(app::window_title())

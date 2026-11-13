@@ -60,7 +60,6 @@ impl<P> ModelSlot<P> {
     }
 
     /// Hands the ready model to a session; the slot keeps its info.
-    #[allow(dead_code, reason = "Start takes the model from step 10 on")]
     pub fn take(&mut self) -> Option<P> {
         match std::mem::take(self) {
             Self::Ready(p, info) => {
@@ -75,7 +74,6 @@ impl<P> ModelSlot<P> {
     }
 
     /// Returns the model from a stopped session; dropped unless the slot is in a session.
-    #[allow(dead_code, reason = "Stop returns the model from step 10 on")]
     pub fn give_back(&mut self, p: P) {
         if let Self::InSession(info) = self {
             *self = Self::Ready(p, info.clone());
@@ -83,7 +81,6 @@ impl<P> ModelSlot<P> {
     }
 
     /// The session did not return the model.
-    #[allow(dead_code, reason = "Stop returns the model from step 10 on")]
     pub fn lost(&mut self) {
         if matches!(self, Self::InSession(_)) {
             *self = Self::Empty;
@@ -98,7 +95,6 @@ impl<P> ModelSlot<P> {
         }
     }
 
-    #[allow(dead_code, reason = "Start checks it from step 10 on")]
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready(..))
     }

@@ -16,6 +16,8 @@ mod switch;
 mod tabs;
 #[cfg(test)]
 mod testutil;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired into VcApp in step 11"))]
+mod update;
 mod widgets;
 
 use std::path::Path;

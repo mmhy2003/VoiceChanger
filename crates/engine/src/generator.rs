@@ -188,6 +188,23 @@ impl Generator {
         }
         Ok(audio.to_vec())
     }
+
+    /// Runs one silent, unvoiced call of `frames` frames (at least one) and discards the output,
+    /// so the first real block does not pay for session start-up.
+    pub fn warm_up(&mut self, frames: usize) -> Result<()> {
+        let t = frames.max(1);
+        let phone = vec![0.0; t * DIM];
+        let pitch = vec![crate::f0::coarse(0.0); t];
+        let pitchf = vec![0.0; t];
+        self.run(&GenInput {
+            phone: &phone,
+            frames: t,
+            pitch: &pitch,
+            pitchf: &pitchf,
+            speaker_id: 0,
+        })?;
+        Ok(())
+    }
 }
 
 /// What import needs to know about a generator.
@@ -464,6 +481,26 @@ mod tests {
             audio,
             standard_normal(&mut StdRng::seed_from_u64(0), audio.len())
         );
+    }
+
+    #[test]
+    fn tiny_warm_up_runs() {
+        if !assets_or_skip(&[ORT_DLL]) {
+            return;
+        }
+        let model = tiny(768, F32, true, &[("sr", "40000")]);
+        let mut g = Generator::load_from_memory(&model, Provider::Cpu, None).unwrap();
+        g.warm_up(4).unwrap();
+        g.warm_up(0).unwrap();
+        let phone = vec![0.0; 4 * DIM];
+        let input = GenInput {
+            phone: &phone,
+            frames: 4,
+            pitch: &[1; 4],
+            pitchf: &[0.0; 4],
+            speaker_id: 0,
+        };
+        assert_eq!(g.run(&input).unwrap().len(), NOISE_CHANNELS * 4);
     }
 
     #[test]

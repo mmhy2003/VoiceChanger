@@ -2,6 +2,9 @@
 
 mod error;
 pub mod onnx;
+pub mod pickle;
+#[cfg(test)]
+mod testutil;
 
 pub use error::ConvertError;
 

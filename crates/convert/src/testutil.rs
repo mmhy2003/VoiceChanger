@@ -202,10 +202,8 @@ fn len32(n: usize) -> [u8; 4] {
 }
 
 /// `temp_dir()/vc-convert-test-{pid}-{name}`, created empty and removed on drop.
-#[expect(dead_code, reason = "used by the .pth archive tests")]
 pub struct TempDir(PathBuf);
 
-#[expect(dead_code, reason = "used by the .pth archive tests")]
 impl TempDir {
     pub fn new(name: &str) -> Self {
         let path =

@@ -10,6 +10,7 @@ mod hotkey;
 mod import;
 mod model;
 mod paths;
+mod self_test;
 mod status_bar;
 mod switch;
 mod tabs;
@@ -27,6 +28,23 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 fn main() -> eframe::Result {
     let _guard = init_logging(&paths::AppDirs::system().logs);
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "VoiceChanger starting");
+    if self_test::requested(std::env::args()) {
+        // No window: the installer test reads the exit code and stdout.
+        let code = match self_test::run(&vc_engine::assets::candidates()) {
+            Ok(report) => {
+                tracing::info!("{report}");
+                println!("{report}");
+                0
+            }
+            Err(e) => {
+                tracing::error!("self-test failed: {e}");
+                println!("self-test failed: {e}");
+                1
+            }
+        };
+        drop(_guard);
+        std::process::exit(code);
+    }
     let dirs = paths::AppDirs::system();
     let (config, note) = config::load(&dirs.settings_file());
     let options = eframe::NativeOptions {

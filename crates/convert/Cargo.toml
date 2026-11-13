@@ -8,9 +8,11 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+half = "2"
 prost = "0.14"
 thiserror = "2"
 tracing = "0.1"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

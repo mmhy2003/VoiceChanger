@@ -3,6 +3,7 @@
 mod error;
 pub mod onnx;
 pub mod pickle;
+pub mod pth;
 #[cfg(test)]
 mod testutil;
 

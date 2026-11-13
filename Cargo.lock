@@ -4342,9 +4342,11 @@ dependencies = [
 name = "vc-convert"
 version = "0.1.0"
 dependencies = [
+ "half",
  "prost",
  "thiserror 2.0.21",
  "tracing",
+ "zip",
 ]
 
 [[package]]

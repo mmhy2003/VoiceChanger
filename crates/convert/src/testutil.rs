@@ -222,3 +222,48 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+/// A torch archive as `torch.save` writes it, with stored entries
+/// `<prefix>/data.pkl`, `<prefix>/data/<key>` and `<prefix>/version`.
+pub fn torch_zip(prefix: &str, pkl: &[u8], storages: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut files: Vec<(String, &[u8])> = vec![(format!("{prefix}/data.pkl"), pkl)];
+    for (key, bytes) in storages {
+        files.push((format!("{prefix}/data/{key}"), bytes));
+    }
+    files.push((format!("{prefix}/version"), b"3"));
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), *b)).collect();
+    zip_of(&files)
+}
+
+/// A zip with stored (uncompressed) entries.
+pub fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, bytes) in files {
+        zip.start_file(*name, options).expect("start zip entry");
+        std::io::Write::write_all(&mut zip, bytes).expect("write zip entry");
+    }
+    zip.finish().expect("finish zip").into_inner()
+}
+
+/// `values` as little-endian IEEE half floats.
+pub fn f16_bytes(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|&v| half::f16::from_f32(v).to_le_bytes())
+        .collect()
+}
+
+/// `values` as little-endian bfloat16.
+pub fn bf16_bytes(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|&v| half::bf16::from_f32(v).to_le_bytes())
+        .collect()
+}
+
+/// `values` as little-endian f32.
+pub fn f32_bytes(values: &[f32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}

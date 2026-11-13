@@ -1,9 +1,12 @@
-//! The update work that runs off the UI thread: checking for a release, the verified download and
-//! removing old installers.
+//! The update work that runs off the UI thread: checking for a release, the verified download,
+//! removing old installers, and the "vc-update" thread that does all three.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 
 use super::client::{self, DownloadError};
 use super::release::{self, CHECKSUMS, Update};
@@ -132,9 +135,154 @@ pub fn cleanup(dir: &Path, current: Version) {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    Check { manual: bool },
+    Download(Update),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Message {
+    Checked { manual: bool, outcome: CheckOutcome },
+    Progress { done: u64, total: u64 },
+    Ready(PathBuf),
+    DownloadFailed(String),
+    Cancelled,
+}
+
+/// Everything the update thread gets. It never sees audio or inference state.
+pub struct WorkerConfig {
+    pub latest_url: String,
+    pub dir: PathBuf,
+    pub current: Version,
+    /// The running exe, whose signature decides whether the installer must be signed.
+    pub running_exe: Option<PathBuf>,
+}
+
+/// Called after every message, so the UI repaints and polls.
+pub type Wake = Box<dyn Fn() + Send>;
+
+/// Progress is sent at most once per MiB, plus once at the end.
+const PROGRESS_STEP: u64 = 1024 * 1024;
+
+/// The UI side of the "vc-update" thread.
+pub struct Updater {
+    tx: Sender<Command>,
+    rx: Receiver<Message>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Updater {
+    /// Starts the thread, which first removes old installers and `.part` files from `config.dir`.
+    pub fn spawn(config: WorkerConfig, wake: Wake) -> Self {
+        let (tx, commands) = mpsc::channel();
+        let (messages, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        if let Err(e) = thread::Builder::new()
+            .name("vc-update".into())
+            .spawn(move || run(&config, &commands, &messages, &wake, &flag))
+        {
+            tracing::error!("cannot start the update thread: {e}");
+        }
+        Self { tx, rx, cancel }
+    }
+
+    /// Queues `command`. A Download clears an earlier cancel first.
+    pub fn send(&self, command: Command) {
+        if matches!(command, Command::Download(_)) {
+            self.cancel.store(false, Ordering::SeqCst);
+        }
+        let _ = self.tx.send(command);
+    }
+
+    /// Stops a running download; the thread then sends Cancelled.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// The messages that arrived since the last poll.
+    pub fn poll(&self) -> Vec<Message> {
+        self.rx.try_iter().collect()
+    }
+
+    #[cfg(test)]
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+}
+
+fn run(
+    config: &WorkerConfig,
+    commands: &Receiver<Command>,
+    messages: &Sender<Message>,
+    wake: &Wake,
+    cancel: &AtomicBool,
+) {
+    let send = |msg: Message| {
+        let sent = messages.send(msg).is_ok();
+        if sent {
+            wake();
+        }
+        sent
+    };
+    let agents = Agents {
+        api: client::api_agent(),
+        download: client::download_agent(),
+    };
+    cleanup(&config.dir, config.current);
+    let mut running = None;
+    for command in commands {
+        let msg = match command {
+            Command::Check { manual } => Message::Checked {
+                manual,
+                outcome: check(&agents.api, &config.latest_url, config.current),
+            },
+            Command::Download(update) => {
+                let running = *running.get_or_insert_with(|| {
+                    config
+                        .running_exe
+                        .as_deref()
+                        .map_or(Signature::Unsigned, verify::signature)
+                });
+                let mut last = 0;
+                let mut progress = |done: u64, total: u64| {
+                    if (done - last >= PROGRESS_STEP || done == total) && done != last {
+                        last = done;
+                        if !send(Message::Progress { done, total }) {
+                            // Nobody is listening any more: stop the download too.
+                            cancel.store(true, Ordering::SeqCst);
+                        }
+                    }
+                };
+                match download_update(
+                    &agents,
+                    &update,
+                    &config.dir,
+                    running,
+                    cancel,
+                    &mut progress,
+                ) {
+                    Ok(path) => Message::Ready(path),
+                    Err(DownloadError::Failed(e)) => {
+                        tracing::warn!("update download failed: {e}");
+                        Message::DownloadFailed(e)
+                    }
+                    Err(DownloadError::Cancelled) => Message::Cancelled,
+                }
+            }
+        };
+        if !send(msg) {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     use sha2::{Digest, Sha256};
 
@@ -474,5 +622,175 @@ mod tests {
             ["Setup-VoiceChanger-1.1.0.exe", "notes.txt"]
         );
         cleanup(&dir.path().join("missing"), v("1.0.0"));
+    }
+
+    fn spawn(server: &TestServer, dir: &Path) -> (Updater, Arc<AtomicUsize>) {
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&wakes);
+        let updater = Updater::spawn(
+            WorkerConfig {
+                latest_url: server.url("/latest"),
+                dir: dir.to_path_buf(),
+                current: v("1.0.0"),
+                running_exe: None,
+            },
+            Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        (updater, wakes)
+    }
+
+    /// Polls for up to 10 s until `n` messages have arrived.
+    fn wait(updater: &Updater, n: usize) -> Vec<Message> {
+        let mut got = Vec::new();
+        let start = Instant::now();
+        while got.len() < n && start.elapsed() < Duration::from_secs(10) {
+            got.extend(updater.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        got
+    }
+
+    /// Polls for up to 10 s until a message other than Progress arrives.
+    fn wait_final(updater: &Updater) -> Vec<Message> {
+        let mut got = Vec::new();
+        let start = Instant::now();
+        while !got
+            .last()
+            .is_some_and(|m| !matches!(m, Message::Progress { .. }))
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            got.extend(updater.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        got
+    }
+
+    #[test]
+    fn updater_check_round_trip() {
+        let dir = TempDir::new("updater-check");
+        let server = TestServer::start(vec![route(
+            "/latest",
+            200,
+            release_json(
+                "v9.0.0",
+                false,
+                &["Setup-VoiceChanger-9.0.0.exe", "SHA256SUMS.txt"],
+            ),
+        )]);
+        let (updater, wakes) = spawn(&server, dir.path());
+        updater.send(Command::Check { manual: true });
+        let got = wait(&updater, 1);
+        assert_eq!(got.len(), 1, "{got:?}");
+        match &got[0] {
+            Message::Checked {
+                manual: true,
+                outcome: CheckOutcome::Available(u),
+            } => assert_eq!(u.version, v("9.0.0")),
+            other => panic!("{other:?}"),
+        }
+        assert!(wakes.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn updater_cleans_on_start() {
+        let dir = TempDir::new("updater-clean");
+        std::fs::write(dir.path().join("Setup-VoiceChanger-0.1.0.exe"), b"x").unwrap();
+        std::fs::write(dir.path().join("a.part"), b"x").unwrap();
+        let server = TestServer::start(vec![route(
+            "/latest",
+            200,
+            release_json("v1.0.0", false, &[]),
+        )]);
+        let (updater, _) = spawn(&server, dir.path());
+        updater.send(Command::Check { manual: false });
+        assert_eq!(wait(&updater, 1).len(), 1);
+        assert!(files(dir.path()).is_empty(), "{:?}", files(dir.path()));
+    }
+
+    #[test]
+    fn updater_download_ready() {
+        let dir = TempDir::new("updater-ready");
+        let data = body(3 * 1024 * 1024);
+        let sums = sums_for(&data);
+        let server = TestServer::start(vec![
+            route("/setup", 200, data.clone()),
+            route("/sums", 200, sums.clone()),
+        ]);
+        let (updater, _) = spawn(&server, dir.path());
+        updater.send(Command::Download(update_for(&server, &data, &sums)));
+        let got = wait_final(&updater);
+        let (last, progress) = got.split_last().expect("messages");
+        assert_eq!(
+            last,
+            &Message::Ready(dir.path().join("Setup-VoiceChanger-1.1.0.exe"))
+        );
+        assert!(!progress.is_empty());
+        assert!(
+            progress
+                .iter()
+                .all(|m| matches!(m, Message::Progress { .. }))
+        );
+        let len = data.len() as u64;
+        assert_eq!(
+            progress.last(),
+            Some(&Message::Progress {
+                done: len,
+                total: len
+            })
+        );
+    }
+
+    #[test]
+    fn updater_download_failed() {
+        let dir = TempDir::new("updater-failed");
+        let data = body(10 * 1024);
+        let sums = sums_for(b"something else");
+        let server = TestServer::start(vec![
+            route("/setup", 200, data.clone()),
+            route("/sums", 200, sums.clone()),
+        ]);
+        let (updater, _) = spawn(&server, dir.path());
+        updater.send(Command::Download(update_for(&server, &data, &sums)));
+        match wait_final(&updater).last() {
+            Some(Message::DownloadFailed(e)) => assert!(e.contains("did not match"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_download_clears_cancel() {
+        let dir = TempDir::new("updater-clears");
+        let server = TestServer::start(Vec::new());
+        let (updater, _) = spawn(&server, dir.path());
+        updater.cancel();
+        assert!(updater.is_cancelled());
+        updater.send(Command::Download(update_for(&server, b"", b"")));
+        assert!(!updater.is_cancelled());
+    }
+
+    #[test]
+    fn updater_cancel_leaves_no_part() {
+        let dir = TempDir::new("updater-cancel");
+        let data = body(8 * 1024 * 1024);
+        let sums = sums_for(&data);
+        let server = TestServer::start(vec![
+            route("/setup", 200, data.clone()),
+            route("/sums", 200, sums.clone()),
+        ]);
+        let (updater, _) = spawn(&server, dir.path());
+        updater.send(Command::Download(update_for(&server, &data, &sums)));
+        updater.cancel();
+        let got = wait_final(&updater);
+        match got.last() {
+            Some(Message::Cancelled | Message::Ready(_)) => {}
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            !files(dir.path()).iter().any(|f| f.ends_with(".part")),
+            "{:?}",
+            files(dir.path())
+        );
     }
 }

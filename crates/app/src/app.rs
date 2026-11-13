@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, PoisonError};
 use std::time::Duration;
@@ -14,7 +15,8 @@ use vc_audio::{
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
 use crate::engine::{EngineProcessor, ErrorSlot};
-use crate::model::{self, ModelSlot};
+use crate::model::{self, ModelSlot, provider_label};
+use crate::status_bar::{self, StatusSnapshot};
 use crate::tabs;
 use crate::widgets::MeterState;
 
@@ -360,6 +362,26 @@ impl VcApp {
         self.shared.set_input_gain(db_to_gain(voice.input_db));
         self.shared.set_output_gain(db_to_gain(voice.output_db));
     }
+
+    /// What the status bar shows; `None` unless running.
+    fn status_snapshot(&self) -> Option<StatusSnapshot> {
+        if !self.is_running() {
+            return None;
+        }
+        Some(StatusSnapshot {
+            latency: Duration::from_micros(self.shared.latency_us.load(Relaxed)),
+            inference: self.stats.inference(),
+            block: self.stats.block(),
+            ratio: self.stats.ratio(),
+            provider: self
+                .model
+                .info()
+                .map(|info| provider_label(info.requested, info.active))
+                .unwrap_or_default(),
+            late_blocks: self.stats.late_blocks(),
+            underruns: self.shared.underruns.load(Relaxed),
+        })
+    }
 }
 
 /// Banner text when a stopped session did not hand the model back.
@@ -390,6 +412,9 @@ impl eframe::App for VcApp {
                 }
             });
         });
+        if let Some(snapshot) = self.status_snapshot() {
+            egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar::show(ui, &snapshot));
+        }
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Voice => tabs::voice::show(ui, self),
             Tab::Models => tabs::models::show(ui),

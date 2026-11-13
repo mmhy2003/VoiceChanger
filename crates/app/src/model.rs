@@ -87,7 +87,6 @@ impl<P> ModelSlot<P> {
         }
     }
 
-    #[allow(dead_code, reason = "the status bar reads it from step 12 on")]
     pub fn info(&self) -> Option<&ModelInfo> {
         match self {
             Self::Ready(_, info) | Self::InSession(info) => Some(info),

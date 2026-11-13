@@ -4,6 +4,7 @@
 mod app;
 mod engine;
 mod model;
+mod status_bar;
 mod tabs;
 mod widgets;
 

@@ -17,8 +17,26 @@ pub fn window_title() -> String {
     format!("VoiceChanger {}", env!("CARGO_PKG_VERSION"))
 }
 
+/// First line of an error message, trimmed and cut to 120 characters; "unknown error" if empty.
+pub fn short_reason(e: Option<&str>) -> String {
+    const MAX_CHARS: usize = 120;
+    let line = e.and_then(|e| e.lines().next()).unwrap_or_default().trim();
+    if line.is_empty() {
+        return "unknown error".into();
+    }
+    match line.char_indices().nth(MAX_CHARS) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.into(),
+    }
+}
+
 /// Banner text for a session that stopped with `status`; `None` while it is running.
-pub fn banner_text(status: StreamStatus, sel: &Selection) -> Option<String> {
+/// `processor_error` is the voice processor's error message, if any.
+pub fn banner_text(
+    status: StreamStatus,
+    sel: &Selection,
+    processor_error: Option<&str>,
+) -> Option<String> {
     let device = |which| match which {
         Endpoint::Input => ("input", sel.input.as_str()),
         Endpoint::Cable => ("cable output", sel.cable.as_str()),
@@ -40,6 +58,10 @@ pub fn banner_text(status: StreamStatus, sel: &Selection) -> Option<String> {
                  Press Start to try again."
             ))
         }
+        StreamStatus::ProcessorFailed => Some(format!(
+            "Voice conversion stopped: {}. Details are in the log. Press Start to try again.",
+            short_reason(processor_error)
+        )),
     }
 }
 
@@ -153,7 +175,7 @@ impl VcApp {
         if !self.is_running() {
             return;
         }
-        if let Some(text) = banner_text(self.shared.status(), &self.state.selection) {
+        if let Some(text) = banner_text(self.shared.status(), &self.state.selection, None) {
             self.stop();
             self.banner = Some(text);
             self.refresh_devices();
@@ -266,7 +288,8 @@ mod tests {
                 StreamStatus::DeviceLost {
                     which: Endpoint::Input
                 },
-                &selection()
+                &selection(),
+                None
             )
             .as_deref(),
             Some(
@@ -283,7 +306,8 @@ mod tests {
                 StreamStatus::Failed {
                     which: Endpoint::Cable
                 },
-                &selection()
+                &selection(),
+                None
             )
             .as_deref(),
             Some(
@@ -295,6 +319,34 @@ mod tests {
 
     #[test]
     fn banner_text_running_none() {
-        assert_eq!(banner_text(StreamStatus::Running, &selection()), None);
+        assert_eq!(banner_text(StreamStatus::Running, &selection(), None), None);
+    }
+
+    #[test]
+    fn banner_text_processor_failed() {
+        assert_eq!(
+            banner_text(
+                StreamStatus::ProcessorFailed,
+                &selection(),
+                Some("inference failed: x\nmore")
+            )
+            .as_deref(),
+            Some(
+                "Voice conversion stopped: inference failed: x. Details are in the log. \
+                 Press Start to try again."
+            )
+        );
+    }
+
+    #[test]
+    fn short_reason_truncates_and_defaults() {
+        assert_eq!(short_reason(Some("  boom  \nsecond line")), "boom");
+        assert_eq!(short_reason(None), "unknown error");
+        assert_eq!(short_reason(Some("")), "unknown error");
+        assert_eq!(short_reason(Some("   \nnext")), "unknown error");
+        let long = "é".repeat(130);
+        assert_eq!(short_reason(Some(&long)), format!("{}…", "é".repeat(120)));
+        let exact = "a".repeat(120);
+        assert_eq!(short_reason(Some(&exact)), exact);
     }
 }

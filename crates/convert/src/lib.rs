@@ -1,6 +1,7 @@
 //! Conversion of PyTorch `.pth` RVC v2 models to ONNX.
 
 mod error;
+pub mod onnx;
 
 pub use error::ConvertError;
 

@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+prost = "0.14"
 thiserror = "2"
 tracing = "0.1"
 

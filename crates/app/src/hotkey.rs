@@ -102,8 +102,11 @@ fn entry(key: egui::Key) -> Option<&'static (Key, Code, &'static str)> {
 }
 
 impl Combo {
-    /// Needs Ctrl, Alt or Shift.
+    /// Needs a key from `KEYS` and Ctrl, Alt or Shift.
     pub fn new(mods: egui::Modifiers, key: egui::Key) -> Result<Self, ComboError> {
+        if key_code(key).is_none() {
+            return Err(ComboError::UnknownKey(key.name().to_owned()));
+        }
         if !(mods.ctrl || mods.alt || mods.shift) {
             return Err(ComboError::NeedsModifier);
         }
@@ -122,6 +125,9 @@ impl Combo {
         }
         let mut tokens: Vec<&str> = s.split('+').map(str::trim).collect();
         let key_name = tokens.pop().unwrap_or_default();
+        if key_name.is_empty() {
+            return Err(ComboError::Empty);
+        }
         let mut mods = egui::Modifiers::NONE;
         for token in tokens {
             match token.to_ascii_lowercase().as_str() {
@@ -160,7 +166,7 @@ impl fmt::Display for Combo {
                 write!(f, "{name}+")?;
             }
         }
-        let name = entry(self.key).map_or_else(|| self.key.name(), |&(_, _, name)| name);
+        let &(_, _, name) = entry(self.key).expect("a combo only holds keys from KEYS");
         f.write_str(name)
     }
 }
@@ -173,7 +179,7 @@ pub enum RecordOutcome {
     Invalid(String),
 }
 
-/// Escape cancels; any other key needs a modifier.
+/// Escape cancels; any other key must be in `KEYS` and needs a modifier.
 pub fn record_key(key: egui::Key, mods: egui::Modifiers) -> RecordOutcome {
     if key == Key::Escape {
         return RecordOutcome::Cancel;
@@ -214,9 +220,13 @@ impl Hotkeys {
     }
 
     /// Unregisters the current hotkey and registers `combo`. On failure nothing is registered.
+    /// Clearing always succeeds, even without a manager.
     pub fn set(&mut self, combo: Option<Combo>) -> Result<(), String> {
         let Some(manager) = &self.manager else {
-            return Err("Global hotkeys are unavailable.".into());
+            return match combo {
+                Some(_) => Err("Global hotkeys are unavailable.".into()),
+                None => Ok(()),
+            };
         };
         if let Some(old) = self.current.take()
             && let Err(e) = manager.unregister(old)
@@ -343,6 +353,40 @@ mod tests {
         assert_eq!(
             record_key(Key::V, Modifiers::NONE),
             RecordOutcome::Invalid("Add Ctrl, Alt or Shift to the key.".into())
+        );
+        assert_eq!(
+            record_key(Key::Tab, Modifiers::CTRL),
+            RecordOutcome::Invalid("Unknown key \"Tab\".".into())
+        );
+    }
+
+    #[test]
+    fn keys_outside_the_list_rejected() {
+        for key in [Key::Tab, Key::Enter, Key::Minus, Key::F13, Key::Escape] {
+            assert_eq!(
+                Combo::new(Modifiers::CTRL, key),
+                Err(ComboError::UnknownKey(key.name().to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_plus_is_empty() {
+        assert_eq!(Combo::parse("Ctrl+"), Err(ComboError::Empty));
+        assert_eq!(Combo::parse("Ctrl + "), Err(ComboError::Empty));
+    }
+
+    #[test]
+    fn clearing_without_a_manager_succeeds() {
+        let mut hotkeys = Hotkeys {
+            manager: None,
+            current: None,
+            pressed: Arc::default(),
+        };
+        assert_eq!(hotkeys.set(None), Ok(()));
+        assert_eq!(
+            hotkeys.set(Some(Combo::parse("Ctrl+V").unwrap())),
+            Err("Global hotkeys are unavailable.".into())
         );
     }
 }

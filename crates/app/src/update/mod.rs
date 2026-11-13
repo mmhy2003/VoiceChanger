@@ -3,6 +3,7 @@
 pub mod client;
 pub mod release;
 pub mod schedule;
+pub mod state;
 #[cfg(test)]
 mod testserver;
 pub mod verify;

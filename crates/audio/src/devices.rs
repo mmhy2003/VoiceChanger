@@ -218,15 +218,19 @@ pub fn list_devices() -> DeviceList {
     };
     let inputs = host
         .input_devices()
-        .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
+        .map(|ds| ds.filter_map(|d| device_name(&d)).collect())
         .unwrap_or_default();
     let outputs = host
         .output_devices()
-        .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
+        .map(|ds| ds.filter_map(|d| device_name(&d)).collect())
         .unwrap_or_default();
-    let default_input = host.default_input_device().and_then(|d| d.name().ok());
-    let default_output = host.default_output_device().and_then(|d| d.name().ok());
+    let default_input = host.default_input_device().and_then(|d| device_name(&d));
+    let default_output = host.default_output_device().and_then(|d| device_name(&d));
     DeviceList::from_names(inputs, outputs, default_input, default_output)
+}
+
+fn device_name(d: &cpal::Device) -> Option<String> {
+    d.description().ok().map(|desc| desc.name().to_string())
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-cpal = "0.16"
+cpal = "0.17"
 ringbuf = "0.5"
 rubato = "0.16"
 thiserror = "2"

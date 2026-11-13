@@ -80,7 +80,7 @@ where
 {
     devices
         .ok()
-        .and_then(|mut ds| ds.find(|d| d.name().is_ok_and(|n| n == name)))
+        .and_then(|mut ds| ds.find(|d| d.description().is_ok_and(|desc| desc.name() == name)))
         .ok_or_else(|| StartError::DeviceNotFound(name.to_string()))
 }
 
@@ -99,7 +99,7 @@ fn open(device: cpal::Device, name: &str, input: bool) -> Result<Opened, StartEr
         name: name.to_string(),
         format: config.sample_format(),
         channels: usize::from(config.channels()),
-        rate: config.sample_rate().0,
+        rate: config.sample_rate(),
         config: config.config(),
     })
 }

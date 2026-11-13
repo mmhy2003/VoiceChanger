@@ -57,15 +57,22 @@ impl UpdateState {
         )
     }
 
+    /// Checks also run while an installer is ready, so a newer release is still seen.
     pub fn can_check(&self) -> bool {
-        matches!(self.phase, Phase::Idle | Phase::Available(_))
+        matches!(
+            self.phase,
+            Phase::Idle | Phase::Available(_) | Phase::Ready { .. }
+        )
     }
 
+    /// Ready stays Ready during the check, so the installer can still be run.
     pub fn checking(&mut self, manual: bool) {
         if !self.can_check() {
             return;
         }
-        self.phase = Phase::Checking { manual };
+        if !matches!(self.phase, Phase::Ready { .. }) {
+            self.phase = Phase::Checking { manual };
+        }
         if manual {
             self.status = None;
         }
@@ -123,11 +130,28 @@ impl UpdateState {
         prefs: &UpdatesConfig,
         current: Version,
     ) -> Option<Action> {
-        if matches!(
-            self.phase,
-            Phase::Downloading { .. } | Phase::Ready { .. } | Phase::Installing
-        ) {
+        if matches!(self.phase, Phase::Downloading { .. } | Phase::Installing) {
             return None;
+        }
+        // A ready installer gives way only to a newer release that would be offered.
+        if let Phase::Ready { update, .. } = &self.phase {
+            let replaces = matches!(&outcome, CheckOutcome::Available(u)
+            if u.version > update.version
+                && schedule::should_notify(
+                    u.version,
+                    current,
+                    prefs.skipped_version.as_deref(),
+                    manual,
+                ));
+            if !replaces {
+                if manual {
+                    self.status = Some(format!(
+                        "VoiceChanger {} is ready to install.",
+                        update.version
+                    ));
+                }
+                return None;
+            }
         }
         self.phase = Phase::Idle;
         match outcome {
@@ -218,13 +242,16 @@ impl UpdateState {
         self.window_open = false;
     }
 
-    pub fn skip(&mut self, prefs: &mut UpdatesConfig) {
+    /// Returns true if a download was under way, which the UI must then cancel.
+    pub fn skip(&mut self, prefs: &mut UpdatesConfig) -> bool {
         if let Some(version) = self.update().map(|u| u.version) {
             prefs.skipped_version = Some(version.to_string());
             self.status = Some(format!("VoiceChanger {version} will be skipped."));
         }
+        let downloading = matches!(self.phase, Phase::Downloading { .. });
         self.phase = Phase::Idle;
         self.window_open = false;
+        downloading
     }
 
     pub fn cancel_download(&mut self) -> bool {
@@ -552,39 +579,111 @@ mod tests {
     #[test]
     fn checks_ignored_while_busy() {
         let prefs = UpdatesConfig::default();
-        let phases = [
-            Phase::Downloading {
-                update: upd("1.1.0"),
-                done: 10,
-                total: 100,
-                install: false,
-            },
-            Phase::Ready {
-                update: upd("1.1.0"),
-                path: path(),
-            },
-        ];
-        for phase in phases.clone() {
-            let mut st = UpdateState {
-                phase: phase.clone(),
-                ..UpdateState::default()
-            };
-            assert!(!st.can_check());
-            st.checking(true);
-            assert_eq!(st.apply(available(true, "1.2.0"), &prefs, cur()), None);
-            assert_eq!(st.phase, phase);
-        }
+        let downloading = Phase::Downloading {
+            update: upd("1.1.0"),
+            done: 10,
+            total: 100,
+            install: false,
+        };
+        let mut st = UpdateState {
+            phase: downloading.clone(),
+            ..UpdateState::default()
+        };
+        assert!(!st.can_check());
+        st.checking(true);
+        assert_eq!(st.apply(available(true, "1.2.0"), &prefs, cur()), None);
+        assert_eq!(st.phase, downloading);
         let busy = |phase| UpdateState {
             phase,
             ..UpdateState::default()
         };
-        assert!(busy(phases[0].clone()).busy());
-        assert!(!busy(phases[1].clone()).busy());
+        assert!(busy(downloading.clone()).busy());
+        assert!(
+            !busy(Phase::Ready {
+                update: upd("1.1.0"),
+                path: path()
+            })
+            .busy()
+        );
         assert!(busy(Phase::Installing).busy());
         assert!(busy(Phase::Checking { manual: false }).busy());
         assert!(!UpdateState::default().busy());
         assert!(UpdateState::default().can_check());
         assert!(busy(Phase::Available(upd("1.1.0"))).can_check());
+    }
+
+    fn ready() -> UpdateState {
+        UpdateState {
+            phase: Phase::Ready {
+                update: upd("1.1.0"),
+                path: path(),
+            },
+            ..UpdateState::default()
+        }
+    }
+
+    #[test]
+    fn checks_while_ready_keep_the_installer() {
+        let prefs = UpdatesConfig::default();
+        let mut st = ready();
+        assert!(st.can_check());
+        st.checking(false);
+        assert_eq!(st.phase, ready().phase);
+        for outcome in [
+            CheckOutcome::Available(upd("1.1.0")),
+            CheckOutcome::UpToDate,
+            CheckOutcome::Failed("offline".into()),
+        ] {
+            assert_eq!(st.apply(checked(false, outcome), &prefs, cur()), None);
+            assert_eq!(st.phase, ready().phase);
+        }
+        // A newer version that was skipped does not replace the ready installer either.
+        let skipped = UpdatesConfig {
+            skipped_version: Some("1.2.0".into()),
+            ..UpdatesConfig::default()
+        };
+        assert_eq!(st.apply(available(false, "1.2.0"), &skipped, cur()), None);
+        assert_eq!(st.phase, ready().phase);
+    }
+
+    #[test]
+    fn newer_release_while_ready_replaces_the_offer() {
+        let mut st = ready();
+        st.checking(false);
+        assert_eq!(
+            st.apply(available(false, "1.2.0"), &UpdatesConfig::default(), cur()),
+            None
+        );
+        assert_eq!(st.phase, Phase::Available(upd("1.2.0")));
+
+        let prefs = UpdatesConfig {
+            auto_download: true,
+            ..UpdatesConfig::default()
+        };
+        let mut st = ready();
+        st.checking(false);
+        assert_eq!(
+            st.apply(available(false, "1.2.0"), &prefs, cur()),
+            Some(Action::Send(Command::Download(upd("1.2.0"))))
+        );
+        assert!(matches!(st.phase, Phase::Downloading { .. }));
+    }
+
+    #[test]
+    fn skip_while_downloading_stops_the_download() {
+        let mut prefs = UpdatesConfig::default();
+        let mut st = offered("1.1.0");
+        st.update_now();
+        assert!(st.skip(&mut prefs));
+        assert_eq!(st.phase, Phase::Idle);
+        assert_eq!(prefs.skipped_version.as_deref(), Some("1.1.0"));
+        // The worker's late answers change nothing.
+        assert_eq!(st.apply(Message::Cancelled, &prefs, cur()), None);
+        assert_eq!(st.apply(Message::Ready(path()), &prefs, cur()), None);
+        assert_eq!(st.phase, Phase::Idle);
+
+        let mut st = offered("1.1.0");
+        assert!(!st.skip(&mut prefs));
     }
 
     #[test]

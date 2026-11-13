@@ -302,6 +302,7 @@ mod tests {
             status,
             body,
             content_length: None,
+            stall: false,
         }
     }
 

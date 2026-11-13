@@ -56,8 +56,10 @@ pub fn window(ctx: &egui::Context, app: &mut VcApp) {
                 if ui.button("Later").clicked() {
                     app.updates.later();
                 }
-                if ui.button("Skip this version").clicked() {
-                    app.updates.skip(&mut app.prefs.updates);
+                if ui.button("Skip this version").clicked()
+                    && app.updates.skip(&mut app.prefs.updates)
+                {
+                    app.updater.cancel();
                 }
             });
             match &app.updates.phase {

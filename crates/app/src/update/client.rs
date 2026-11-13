@@ -13,6 +13,9 @@ pub const LATEST_URL: &str = "https://api.github.com/repos/mmhy2003/VoiceChanger
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const API_TIMEOUT: Duration = Duration::from_secs(30);
+/// The whole installer body must arrive within an hour, so a stalled server cannot hold the
+/// update thread (and every later check queued behind it) forever.
+const DOWNLOAD_BODY_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const CHUNK: usize = 64 * 1024;
 
 /// For small API and text requests: the whole call must finish within 30 s.
@@ -23,11 +26,16 @@ pub fn api_agent() -> ureq::Agent {
         .into()
 }
 
-/// For the installer: no overall limit, since it is hundreds of MB, but the server must start answering
-/// within 30 s.
+/// For the installer: the server must start answering within 30 s and the body, hundreds of MB,
+/// must arrive within an hour.
 pub fn download_agent() -> ureq::Agent {
+    download_agent_with(DOWNLOAD_BODY_TIMEOUT)
+}
+
+fn download_agent_with(body: Duration) -> ureq::Agent {
     base_config()
         .timeout_recv_response(Some(API_TIMEOUT))
+        .timeout_recv_body(Some(body))
         .build()
         .into()
 }
@@ -63,7 +71,7 @@ pub enum DownloadError {
 
 /// Streams `url` into `part` in 64 KiB chunks, hashing while writing, and returns the SHA-256 as
 /// lowercase hex. `cancel` is checked before each read; `progress` gets the byte count after each chunk.
-/// Receiving other than `size` bytes is a failure. `part` is deleted on every error, including Cancelled.
+/// Receiving other than `size` bytes is a failure, reported as soon as more arrive. `part` is deleted on every error, including Cancelled.
 pub fn download(
     agent: &ureq::Agent,
     url: &str,
@@ -107,6 +115,12 @@ fn stream(
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(failed(&e)),
         };
+        // Stop at once rather than let an endless response fill the disk.
+        if total + n as u64 > size {
+            return Err(DownloadError::Failed(format!(
+                "received more than {size} bytes"
+            )));
+        }
         out.write_all(&buf[..n]).map_err(write_failed)?;
         hasher.update(&buf[..n]);
         total += n as u64;
@@ -143,6 +157,7 @@ mod tests {
             status,
             body,
             content_length: None,
+            stall: false,
         }
     }
 
@@ -258,6 +273,60 @@ mod tests {
                 data.len() + 1
             )))
         );
+        assert!(!part.exists());
+    }
+
+    #[test]
+    fn download_stalled_body_times_out() {
+        let dir = TempDir::new("client-stall");
+        let data = body(100 * 1024);
+        let server = TestServer::start(vec![Route {
+            content_length: Some(data.len() + 1000),
+            stall: true,
+            ..route("/setup.exe", 200, data.clone())
+        }]);
+        let part = dir.path().join("setup.exe.part");
+        let start = std::time::Instant::now();
+        let got = download(
+            &download_agent_with(Duration::from_secs(1)),
+            &server.url("/setup.exe"),
+            &part,
+            (data.len() + 1000) as u64,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+        assert!(matches!(got, Err(DownloadError::Failed(_))), "{got:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(!part.exists());
+    }
+
+    #[test]
+    fn download_too_long_fails_before_eof() {
+        let dir = TempDir::new("client-long");
+        let data = body(300 * 1024);
+        let server = TestServer::start(vec![route("/setup.exe", 200, data.clone())]);
+        let part = dir.path().join("setup.exe.part");
+        let mut calls = Vec::new();
+        let got = download(
+            &download_agent(),
+            &server.url("/setup.exe"),
+            &part,
+            100 * 1024,
+            &AtomicBool::new(false),
+            &mut |done| calls.push(done),
+        );
+        assert_eq!(
+            got,
+            Err(DownloadError::Failed(format!(
+                "received more than {} bytes",
+                100 * 1024
+            )))
+        );
+        assert!(calls.iter().all(|&done| done <= 100 * 1024), "{calls:?}");
         assert!(!part.exists());
     }
 

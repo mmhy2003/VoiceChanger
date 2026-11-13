@@ -10,6 +10,8 @@ pub struct Route {
     pub body: Vec<u8>,
     /// None = body.len(); larger = short read.
     pub content_length: Option<usize>,
+    /// Hold the connection open for 30 s after the body instead of closing it (a stalled server).
+    pub stall: bool,
 }
 
 pub struct TestServer {
@@ -61,13 +63,14 @@ fn serve(mut stream: TcpStream, routes: &[Route], log: &Mutex<Vec<String>>) {
     let route = routes
         .iter()
         .find(|r| first == format!("GET {} HTTP/1.1", r.path));
-    let (status, body, length) = match route {
+    let (status, body, length, stall) = match route {
         Some(r) => (
             r.status,
             &r.body[..],
             r.content_length.unwrap_or(r.body.len()),
+            r.stall,
         ),
-        None => (404, &[][..], 0),
+        None => (404, &[][..], 0, false),
     };
     let response =
         format!("HTTP/1.1 {status} X\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n");
@@ -75,5 +78,8 @@ fn serve(mut stream: TcpStream, routes: &[Route], log: &Mutex<Vec<String>>) {
     let _ = stream
         .write_all(response.as_bytes())
         .and_then(|()| stream.write_all(body));
+    if stall {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
     let _ = stream.shutdown(Shutdown::Write);
 }

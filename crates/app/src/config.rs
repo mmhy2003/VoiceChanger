@@ -30,6 +30,7 @@ pub struct Config {
     pub pitch_by_model: BTreeMap<String, i32>,
     pub hotkey: Option<String>,
     pub start_minimised: bool,
+    pub updates: UpdatesConfig,
 }
 
 impl Default for Config {
@@ -43,6 +44,30 @@ impl Default for Config {
             pitch_by_model: BTreeMap::new(),
             hotkey: None,
             start_minimised: false,
+            updates: UpdatesConfig::default(),
+        }
+    }
+}
+
+/// The `[updates]` table: automatic checks and downloads, and what the last check left behind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    pub auto_check: bool,
+    pub auto_download: bool,
+    /// Unix seconds of the last check; 0 = never.
+    pub last_check: u64,
+    /// A version the user chose to skip.
+    pub skipped_version: Option<String>,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            auto_download: false,
+            last_check: 0,
+            skipped_version: None,
         }
     }
 }
@@ -145,6 +170,7 @@ pub struct Prefs {
     pub pitch_by_model: BTreeMap<String, i32>,
     pub hotkey: Option<String>,
     pub start_minimised: bool,
+    pub updates: UpdatesConfig,
 }
 
 impl Prefs {
@@ -154,6 +180,7 @@ impl Prefs {
             pitch_by_model: c.pitch_by_model.clone(),
             hotkey: c.hotkey.clone(),
             start_minimised: c.start_minimised,
+            updates: c.updates.clone(),
         }
     }
 }
@@ -265,6 +292,11 @@ mod tests {
         assert!(c.pitch_by_model.is_empty());
         assert_eq!(c.hotkey, None);
         assert!(!c.start_minimised);
+        assert_eq!(c.updates, UpdatesConfig::default());
+        assert!(c.updates.auto_check);
+        assert!(!c.updates.auto_download);
+        assert_eq!(c.updates.last_check, 0);
+        assert_eq!(c.updates.skipped_version, None);
     }
 
     fn sample() -> Config {
@@ -302,6 +334,12 @@ mod tests {
             pitch_by_model: [("ana-v2".to_string(), 5), ("bob".to_string(), -12)].into(),
             hotkey: Some("Ctrl+Alt+V".into()),
             start_minimised: true,
+            updates: UpdatesConfig {
+                auto_check: false,
+                auto_download: true,
+                last_check: 1_763_100_000,
+                skipped_version: Some("1.1.0".into()),
+            },
             ..Config::default()
         }
     }
@@ -312,11 +350,10 @@ mod tests {
         let path = dir.path().join("config").join("settings.toml");
         let config = sample();
         config.save(&path).unwrap();
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("provider = \"cuda\"")
-        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("provider = \"cuda\""), "{text}");
+        assert!(text.contains("[updates]"), "{text}");
+        assert!(text.contains("last_check = 1763100000"), "{text}");
         assert_eq!(load(&path), (config, None));
     }
 
@@ -339,6 +376,44 @@ mod tests {
         let mut expected = Config::default();
         expected.voice.pitch = 3;
         assert_eq!(config, expected);
+    }
+
+    #[test]
+    fn missing_updates_table_takes_defaults() {
+        let dir = TempDir::new("config-missing-updates");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(
+            &path,
+            "[voice]
+pitch = 3
+",
+        )
+        .unwrap();
+        let (config, note) = load(&path);
+        assert_eq!(note, None);
+        assert_eq!(config.updates, UpdatesConfig::default());
+    }
+
+    #[test]
+    fn partial_updates_table() {
+        let dir = TempDir::new("config-partial-updates");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(
+            &path,
+            "[updates]
+auto_check = false
+",
+        )
+        .unwrap();
+        let (config, note) = load(&path);
+        assert_eq!(note, None);
+        assert_eq!(
+            config.updates,
+            UpdatesConfig {
+                auto_check: false,
+                ..UpdatesConfig::default()
+            }
+        );
     }
 
     #[test]
@@ -442,6 +517,7 @@ mod tests {
                 pitch_by_model: config.pitch_by_model.clone(),
                 hotkey: Some("Ctrl+Alt+V".into()),
                 start_minimised: true,
+                updates: config.updates.clone(),
             }
         );
     }

@@ -224,6 +224,7 @@ impl AppState {
             pitch_by_model: prefs.pitch_by_model.clone(),
             hotkey: prefs.hotkey.clone(),
             start_minimised: prefs.start_minimised,
+            updates: prefs.updates.clone(),
             ..Config::default()
         }
     }
@@ -805,6 +806,7 @@ impl eframe::App for VcApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::UpdatesConfig;
     use vc_audio::{DEFAULT_MONITOR_DB, DeviceInfo};
 
     #[test]
@@ -1017,6 +1019,12 @@ mod tests {
             pitch_by_model: [("ana".to_string(), -4)].into(),
             hotkey: Some("Ctrl+Alt+V".into()),
             start_minimised: true,
+            updates: UpdatesConfig {
+                auto_check: false,
+                auto_download: true,
+                last_check: 1_763_100_000,
+                skipped_version: Some("1.0.1".into()),
+            },
             ..Config::default()
         }
     }

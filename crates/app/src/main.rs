@@ -5,6 +5,7 @@ mod app;
 mod config;
 mod engine;
 mod files;
+mod hotkey;
 mod import;
 mod model;
 mod paths;

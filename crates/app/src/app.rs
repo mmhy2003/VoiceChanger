@@ -960,14 +960,22 @@ impl VcApp {
         }
     }
 
+    /// Flips Bypass from the tray. Bypass only exists for a chosen model.
+    fn toggle_bypass(&mut self) {
+        if self.model_chosen() {
+            self.bypass = !self.bypass;
+        }
+    }
+
     /// Carries out the tray's commands, a second launch's "show" and Windows ending the session.
     fn poll_tray(&mut self, ctx: &egui::Context) {
-        let commands = self.tray.as_ref().map(Tray::poll).unwrap_or_default();
+        let commands = self.tray.as_mut().map(Tray::poll).unwrap_or_default();
         for command in commands {
             match command {
                 TrayCommand::Open => self.show_window(ctx),
                 TrayCommand::Start => self.start_from_tray(ctx),
                 TrayCommand::Stop => self.stop(),
+                TrayCommand::Bypass => self.toggle_bypass(),
                 TrayCommand::Exit => self.quit(ctx),
             }
         }
@@ -1000,7 +1008,13 @@ impl VcApp {
             Some(VoiceSource::Model) => self.model.info().map(|info| info.name.as_str()),
             None => None,
         };
-        let state = tray_state(self.is_running(), self.start_blocked().is_some(), sent);
+        let state = tray_state(
+            self.is_running(),
+            self.start_blocked().is_some(),
+            sent,
+            self.bypass,
+            self.model_chosen(),
+        );
         if let Some(tray) = &mut self.tray {
             tray.sync(state);
         }

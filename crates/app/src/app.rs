@@ -659,6 +659,11 @@ impl VcApp {
         self.session_info.is_some()
     }
 
+    /// The running session converts the voice.
+    pub(crate) fn is_converting(&self) -> bool {
+        self.session_source == Some(VoiceSource::Model)
+    }
+
     /// The chosen library model. `None` is the original voice, also when the saved model is gone.
     pub(crate) fn chosen_model(&self) -> Option<&ModelEntry> {
         let id = self.prefs.last_model.as_deref()?;
@@ -797,11 +802,25 @@ impl VcApp {
 
     /// What the status bar shows; `None` unless running.
     fn status_snapshot(&self) -> Option<StatusSnapshot> {
-        if !self.is_running() {
-            return None;
+        self.session_source?;
+        let latency = Duration::from_micros(self.shared.latency_us.load(Relaxed));
+        let underruns = self.shared.underruns.load(Relaxed);
+        if !self.is_converting() {
+            // The inference stats are left over from the last converted session.
+            return Some(StatusSnapshot {
+                latency,
+                original: true,
+                inference: Duration::ZERO,
+                block: Duration::ZERO,
+                ratio: 0.0,
+                provider: String::new(),
+                late_blocks: 0,
+                underruns,
+            });
         }
         Some(StatusSnapshot {
-            latency: Duration::from_micros(self.shared.latency_us.load(Relaxed)),
+            latency,
+            original: false,
             inference: self.stats.inference(),
             block: self.stats.block(),
             ratio: self.stats.ratio(),
@@ -811,7 +830,7 @@ impl VcApp {
                 .map(|info| provider_label(info.requested, info.active))
                 .unwrap_or_default(),
             late_blocks: self.stats.late_blocks(),
-            underruns: self.shared.underruns.load(Relaxed),
+            underruns,
         })
     }
 

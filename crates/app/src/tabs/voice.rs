@@ -4,6 +4,7 @@ use eframe::egui;
 use vc_audio::SessionInfo;
 
 use crate::app::{AUDIO_DEAD, Tab, VcApp};
+use crate::source::VoiceSource;
 use crate::widgets;
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
@@ -66,7 +67,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
 
     widgets::meter(ui, "Input", app.input_meter.shown);
     widgets::meter(ui, "Output", app.output_meter.shown);
-    ui.label(status_line(app.session_info));
+    ui.label(status_line(
+        app.session_info,
+        app.session_source == Some(VoiceSource::Original),
+    ));
 }
 
 /// The Model list of library entries whose file exists, the model's state and a pending switch.
@@ -133,14 +137,15 @@ pub fn start_hint(
     }
 }
 
-/// "Stopped", or the running session's sample rates.
-pub fn status_line(info: Option<SessionInfo>) -> String {
+/// "Stopped", or the running session's voice and sample rates.
+pub fn status_line(info: Option<SessionInfo>, original: bool) -> String {
     let Some(info) = info else {
         return "Stopped".to_string();
     };
     let monitor = info.monitor_rate.map_or_else(|| "off".to_string(), khz);
+    let voice = if original { "original voice · " } else { "" };
     format!(
-        "Running · input {} · cable {} · monitor {monitor}",
+        "Running · {voice}input {} · cable {} · monitor {monitor}",
         khz(info.input_rate),
         khz(info.cable_rate)
     )
@@ -186,7 +191,7 @@ mod tests {
 
     #[test]
     fn status_line_stopped() {
-        assert_eq!(status_line(None), "Stopped");
+        assert_eq!(status_line(None, false), "Stopped");
     }
 
     #[test]
@@ -197,7 +202,7 @@ mod tests {
             monitor_rate: None,
         };
         assert_eq!(
-            status_line(Some(info)),
+            status_line(Some(info), false),
             "Running · input 44.1 kHz · cable 48 kHz · monitor off"
         );
     }
@@ -210,8 +215,22 @@ mod tests {
             monitor_rate: Some(96000),
         };
         assert_eq!(
-            status_line(Some(info)),
+            status_line(Some(info), false),
             "Running · input 48 kHz · cable 48 kHz · monitor 96 kHz"
         );
+    }
+
+    #[test]
+    fn status_line_running_original() {
+        let info = SessionInfo {
+            input_rate: 48000,
+            cable_rate: 48000,
+            monitor_rate: None,
+        };
+        assert_eq!(
+            status_line(Some(info), true),
+            "Running · original voice · input 48 kHz · cable 48 kHz · monitor off"
+        );
+        assert_eq!(status_line(None, true), "Stopped");
     }
 }

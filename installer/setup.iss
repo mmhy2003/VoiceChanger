@@ -83,10 +83,40 @@ const
   DeviceDescValue = '{a45c254e-df1c-4efd-8020-67d146a850e0},2';
   InterfaceNameValue = '{b3f8fa53-0004-438e-9003-51a46e139bfc},6';
   DeviceStateActive = 1;
+  LocalUrlPrefix = 'http://127.0.0.1:';
 
 var
   CableChecked: Boolean;
   CableFound: Boolean;
+
+{ /CableUrl= and /CableSha256= are for installer\test-install.ps1 only: accepted only for a local URL. }
+function PackOverridden: Boolean;
+begin
+  Result := Pos(LocalUrlPrefix, ExpandConstant('{param:CableUrl|}')) = 1;
+end;
+
+function PackUrl: String;
+begin
+  if PackOverridden then
+    Result := ExpandConstant('{param:CableUrl|}')
+  else
+    Result := '{#CableUrl}';
+end;
+
+function PackSha256: String;
+begin
+  Result := '{#CableSha256}';
+  if PackOverridden and (ExpandConstant('{param:CableSha256|}') <> '') then
+    Result := ExpandConstant('{param:CableSha256|}');
+end;
+
+{ Also runs in silent installs: logs the pack for installer\test-install.ps1. }
+procedure InitializeWizard;
+begin
+  Log('VoiceChanger: VB-CABLE pack ' + PackUrl);
+  if (ExpandConstant('{param:CableUrl|}') <> '') and not PackOverridden then
+    Log('VoiceChanger: ignoring /CableUrl=' + ExpandConstant('{param:CableUrl|}'));
+end;
 
 { Same rule as is_virtual_cable in crates/audio/src/devices.rs. }
 function IsVirtualCableName(Name: String): Boolean;

@@ -525,6 +525,14 @@ impl VcApp {
         self.save.mark_saved(cfg);
     }
 
+    /// Makes the original voice the active choice. The loaded pipeline stays in the slot, so
+    /// picking its model again is instant.
+    pub(crate) fn select_original(&mut self) {
+        self.prefs.last_model = None;
+        self.bypass = false;
+        self.pending = None;
+    }
+
     /// Makes the library model `id` the active one: loads it, or loads its generator to swap in
     /// (also while running). The newest request wins.
     pub(crate) fn select_model(&mut self, id: &str) {
@@ -1080,7 +1088,11 @@ impl eframe::App for VcApp {
         if !self.in_tray {
             self.draw(ctx);
         }
-        // A switch of the source (the model became ready; later Bypass and Original voice), or a
+        // Bypass only exists for a chosen model (it may just have been deleted).
+        if !self.model_chosen() {
+            self.bypass = false;
+        }
+        // A switch of the source (the model became ready, Bypass, Original voice), or a
         // device, block, context or crossfade change, restarts the stream. The model is kept.
         if let Some(running) = self.session_source {
             let forced = self.state.selection != before || self.restart_requested;

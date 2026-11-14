@@ -1,10 +1,11 @@
-//! Voice tab: the Model list, Start/Stop, live voice controls, level meters, status and the banner.
+//! Voice tab: the Model list with the original voice, Start/Stop and Bypass, live voice controls,
+//! level meters, status and the banner.
 
 use eframe::egui;
 use vc_audio::SessionInfo;
 
 use crate::app::{AUDIO_DEAD, Tab, VcApp};
-use crate::source::VoiceSource;
+use crate::source::{ORIGINAL_VOICE, VoiceSource};
 use crate::widgets;
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
@@ -23,24 +24,34 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
 
     model_picker(ui, app);
 
-    if app.is_running() {
-        if ui.button("■ Stop").clicked() {
-            app.stop();
-        }
+    let model_chosen = app.model_chosen();
+    let hint = if app.is_running() {
+        None
     } else {
-        let hint = app.start_blocked();
-        if ui
+        app.start_blocked()
+    };
+    ui.horizontal(|ui| {
+        if app.is_running() {
+            if ui.button("■ Stop").clicked() {
+                app.stop();
+            }
+        } else if ui
             .add_enabled(hint.is_none(), egui::Button::new("▶ Start"))
             .clicked()
         {
             app.start();
         }
-        if let Some(hint) = hint {
-            ui.label(hint);
-        }
+        ui.add_enabled(
+            model_chosen,
+            egui::Checkbox::new(&mut app.bypass, "Bypass: send my original voice"),
+        );
+    });
+    if let Some(hint) = hint {
+        ui.label(hint);
     }
 
-    let pitch = ui.add(
+    let pitch = ui.add_enabled(
+        model_chosen,
         egui::Slider::new(&mut app.state.voice.pitch, -24..=24)
             .text("Pitch")
             .suffix(" st"),
@@ -59,11 +70,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
             .text("Output gain")
             .suffix(" dB"),
     );
-    ui.add(
+    ui.add_enabled(
+        model_chosen,
         egui::Slider::new(&mut voice.gate_db, -90.0..=-20.0)
             .text("Noise gate")
             .suffix(" dB"),
     );
+    if !model_chosen {
+        ui.label(CONVERTED_ONLY);
+    }
 
     widgets::meter(ui, "Input", app.input_meter.shown);
     widgets::meter(ui, "Output", app.output_meter.shown);
@@ -73,23 +88,32 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
     ));
 }
 
-/// The Model list of library entries whose file exists, the model's state and a pending switch.
-/// Picking an entry switches to it, also while running.
-fn model_picker(ui: &mut egui::Ui, app: &mut VcApp) {
-    if app.library.entries().is_empty() {
-        ui.horizontal(|ui| {
-            ui.label("No models yet.");
-            if ui.button("Open Models").clicked() {
-                app.tab = Tab::Models;
-            }
-        });
-        return;
+/// Shown under the sliders while the original voice is selected.
+const CONVERTED_ONLY: &str = "Pitch and noise gate apply to converted voices only.";
+
+/// The text beside the Model list: the model's state, or that nothing is converted.
+pub fn model_state(model_chosen: bool, slot_label: String) -> String {
+    if model_chosen {
+        slot_label
+    } else {
+        "Original voice · no conversion".to_string()
     }
-    let active = app.prefs.last_model.clone();
+}
+
+/// What was clicked in the Model list.
+enum Pick {
+    Original,
+    Model(String),
+}
+
+/// The Model list: "Original voice (no model)" first, then the library entries whose file
+/// exists; beside it the model's state, below it a pending switch. Picking an entry switches
+/// to it, also while running.
+fn model_picker(ui: &mut egui::Ui, app: &mut VcApp) {
+    let active = app.chosen_model().map(|e| (e.id.clone(), e.name.clone()));
     let selected = active
-        .as_deref()
-        .and_then(|id| app.library.get(id))
-        .map_or_else(|| "Choose a model".to_string(), |e| e.name.clone());
+        .as_ref()
+        .map_or(ORIGINAL_VOICE, |(_, name)| name.as_str());
     let choices: Vec<(String, String)> = app
         .library
         .entries()
@@ -102,20 +126,36 @@ fn model_picker(ui: &mut egui::Ui, app: &mut VcApp) {
         egui::ComboBox::from_label("Model")
             .selected_text(selected)
             .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(active.is_none(), ORIGINAL_VOICE)
+                    .clicked()
+                {
+                    picked = Some(Pick::Original);
+                }
                 for (id, name) in &choices {
-                    let is_active = active.as_deref() == Some(id.as_str());
+                    let is_active = active.as_ref().is_some_and(|(a, _)| a == id);
                     if ui.selectable_label(is_active, name).clicked() {
-                        picked = Some(id.clone());
+                        picked = Some(Pick::Model(id.clone()));
                     }
                 }
             });
-        ui.label(app.model.label());
+        ui.label(model_state(active.is_some(), app.model.label()));
     });
+    if app.library.entries().is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("No models yet.");
+            if ui.button("Open Models").clicked() {
+                app.tab = Tab::Models;
+            }
+        });
+    }
     if let Some(pending) = &app.pending {
         ui.label(format!("Switching to {}…", pending.name));
     }
-    if let Some(id) = picked {
-        app.select_model(&id);
+    match picked {
+        Some(Pick::Original) => app.select_original(),
+        Some(Pick::Model(id)) => app.select_model(&id),
+        None => {}
     }
 }
 
@@ -187,6 +227,17 @@ mod tests {
         );
         // Bypass asks for the original voice, which needs no model.
         assert_eq!(start_hint(true, None, ready(true, true)), None);
+    }
+
+    #[test]
+    fn model_state_original_and_model() {
+        assert_eq!(ORIGINAL_VOICE, "Original voice (no model)");
+        let slot = "Ana · 40 kHz · DirectML (GPU 0)".to_string();
+        assert_eq!(
+            model_state(false, slot.clone()),
+            "Original voice · no conversion"
+        );
+        assert_eq!(model_state(true, slot.clone()), slot);
     }
 
     #[test]

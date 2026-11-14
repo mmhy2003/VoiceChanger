@@ -3,6 +3,9 @@
 //! The original voice is only sent when the user chose it (the Model list entry or Bypass).
 //! A model that is loading, failed or lost never falls back to it.
 
+/// The Model list's first entry.
+pub const ORIGINAL_VOICE: &str = "Original voice (no model)";
+
 /// What a session sends to the cable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoiceSource {

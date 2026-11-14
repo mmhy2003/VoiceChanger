@@ -9,6 +9,7 @@ and the project uses `X.Y.Z` versions as described in [AGENTS.md](AGENTS.md).
 
 ### Added
 - In-app updates: VoiceChanger checks GitHub Releases every 6 hours (Settings → General, on by default) and shows new versions with their release notes. **Update now** downloads the installer, checks it against `SHA256SUMS.txt` (and its signature once releases are signed), installs it silently and reopens the app; models and settings are kept. **Later**, **Skip this version** and optional background downloads.
+- App logo and icon: the new logo is the icon of the app, its window and taskbar button, shortcuts, the installer and Apps & features, and heads the README. `cargo xtask gen-icon` regenerates the icon from `assets/logo/voicechanger.png`.
 
 ### Changed
 - The installer accepts `/RELAUNCH` to start VoiceChanger after a silent install.

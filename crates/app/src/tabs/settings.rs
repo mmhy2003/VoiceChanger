@@ -23,7 +23,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
-            ui.label("Input");
+            ui.label("Microphone");
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt("input")
                     .selected_text(name_or_none(&sel.input.name))
@@ -43,7 +43,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
             });
             ui.end_row();
 
-            ui.label("Cable output");
+            ui.label("Virtual mic");
             egui::ComboBox::from_id_salt("cable")
                 .selected_text(output_label(&sel.cable.name))
                 .show_ui(ui, |ui| {

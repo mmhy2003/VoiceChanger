@@ -70,6 +70,8 @@ VoiceChanger keeps its files in four folders:
 
 The global Start/Stop hotkey is off by default. Set it in Settings → General; the combination needs at least one modifier (Ctrl, Alt or Shift); Esc cancels recording.
 
+Closing the window hides VoiceChanger to the system tray, where the voice keeps running. Click the tray icon to open the window, or right-click it for Open VoiceChanger, Start, Stop and Exit; only Exit closes the app. Settings → General → **Start in the tray** launches it with only the tray icon.
+
 If `settings.toml` or `library.toml` cannot be read, it is kept as `settings.toml.bad` or `library.toml.bad` and the app starts with defaults or an empty library. Model files are never deleted.
 
 ## Updates and privacy

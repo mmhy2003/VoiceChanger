@@ -7,6 +7,7 @@ use crate::app::{ProviderChoice, VcApp};
 use crate::files;
 use crate::hotkey::{RecordOutcome, record_key};
 use crate::paths::AppDirs;
+use crate::update;
 use crate::widgets;
 
 const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
@@ -22,7 +23,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
-            ui.label("Input");
+            ui.label("Microphone");
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt("input")
                     .selected_text(name_or_none(&sel.input.name))
@@ -42,7 +43,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
             });
             ui.end_row();
 
-            ui.label("Cable output");
+            ui.label("Virtual mic");
             egui::ComboBox::from_id_salt("cable")
                 .selected_text(output_label(&sel.cable.name))
                 .show_ui(ui, |ui| {
@@ -176,7 +177,7 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
     }
 }
 
-/// Settings → General: the Start/Stop hotkey, Start minimised, the logs folder and About.
+/// Settings → General: the Start/Stop hotkey, Start in the tray, updates, the logs folder and About.
 fn general(ui: &mut egui::Ui, app: &mut VcApp) {
     ui.separator();
     ui.heading("General");
@@ -225,7 +226,8 @@ fn general(ui: &mut egui::Ui, app: &mut VcApp) {
         ui.colored_label(ui.visuals().error_fg_color, error);
     }
 
-    ui.checkbox(&mut app.prefs.start_minimised, "Start minimised");
+    ui.checkbox(&mut app.prefs.start_minimised, "Start in the tray");
+    update::ui::settings_rows(ui, app);
     ui.horizontal(|ui| {
         if ui.button("Open logs folder").clicked() {
             files::open_folder(&app.dirs.logs);

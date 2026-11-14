@@ -11,16 +11,20 @@ pub struct AppDirs {
     pub config: PathBuf,
     pub models: PathBuf,
     pub logs: PathBuf,
+    /// Downloaded installers.
+    pub updates: PathBuf,
 }
 
 impl AppDirs {
-    /// `roaming/VoiceChanger/{config,models}` and `local/VoiceChanger/logs`.
+    /// `roaming/VoiceChanger/{config,models}` and `local/VoiceChanger/{logs,updates}`.
     pub fn under(roaming: &Path, local: &Path) -> Self {
         let app = roaming.join(APP_NAME);
+        let local = local.join(APP_NAME);
         Self {
             config: app.join("config"),
             models: app.join("models"),
-            logs: local.join(APP_NAME).join("logs"),
+            logs: local.join("logs"),
+            updates: local.join("updates"),
         }
     }
 
@@ -55,6 +59,10 @@ mod tests {
         assert_eq!(
             dirs.logs,
             Path::new("C:/l").join("VoiceChanger").join("logs")
+        );
+        assert_eq!(
+            dirs.updates,
+            Path::new("C:/l").join("VoiceChanger").join("updates")
         );
         assert_eq!(dirs.settings_file(), dirs.config.join("settings.toml"));
     }

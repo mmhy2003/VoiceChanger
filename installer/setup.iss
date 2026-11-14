@@ -11,6 +11,10 @@
 #define AppName "VoiceChanger"
 #define AppExe "voicechanger.exe"
 #define Root AddBackslash(SourcePath) + ".."
+; VB-CABLE pack from vb-audio.com/Cable. Bump both together in a PR; test-install.ps1 checks them.
+#define CableUrl "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack46.zip"
+#define CableSha256 "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90"
+#define CableSetupExe "VBCABLE_Setup_x64.exe"
 
 [Setup]
 AppId={{7C3B9E52-4A1D-4F6E-9B8A-2D5E1C0F7A34}

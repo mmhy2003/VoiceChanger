@@ -3,7 +3,8 @@
 Installs, upgrades and uninstalls a built Setup-VoiceChanger-<Version>.exe and checks the result.
 CI runs it after the installer smoke build, and release.yml runs it before publishing.
 .DESCRIPTION
-Checks: per-user install without admin, files and file version, `voicechanger.exe --self-test`,
+Checks first that the VB-CABLE pack pinned in setup.iss still downloads with the pinned SHA-256
+and contains the pinned setup exe. Then: per-user install without admin, files and file version, `voicechanger.exe --self-test`,
 the VB-CABLE check (against fake endpoints under HKCU), upgrade keeps user data, the in-app
 updater's /SILENT /RELAUNCH upgrade starts voicechanger.exe again while a silent install without
 /RELAUNCH does not, a silent uninstall keeps user data and /PURGEDATA removes it.
@@ -22,6 +23,25 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function Get-PinnedValue([string] $Name) {
+    $m = Select-String -Path (Join-Path $PSScriptRoot 'setup.iss') -Pattern "^#define $Name `"(.+)`"$"
+    if (-not $m) { throw "setup.iss has no #define $Name" }
+    $m.Matches[0].Groups[1].Value
+}
+
+# Downloads the pinned VB-CABLE pack: fails when vb-audio.com changes it under the same URL.
+function Test-CablePin {
+    $url = Get-PinnedValue 'CableUrl'; $sha = Get-PinnedValue 'CableSha256'; $exe = Get-PinnedValue 'CableSetupExe'
+    $dir = Join-Path ([IO.Path]::GetTempPath()) "vc-cable-pin-$PID"; New-Item -ItemType Directory -Force $dir | Out-Null; $zip = Join-Path $dir 'pack.zip'
+    for ($i = 1; $true; $i++) { try { Invoke-WebRequest -UseBasicParsing $url -OutFile $zip; break } catch { if ($i -ge 4) { throw "FAIL: could not download $url ($_)" }; Start-Sleep -Seconds (5 * $i) } }
+    $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+    Assert ($got -eq $sha) "the pinned VB-CABLE pack $url has SHA-256 $sha (got $got)"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $a = [IO.Compression.ZipFile]::OpenRead($zip); try { $names = @($a.Entries.FullName) } finally { $a.Dispose() }
+    Assert ($names -contains ($exe -replace '\\','/')) "the pinned pack contains $exe"
+    Remove-Item -Recurse -Force $dir
+}
 
 $appId = '{7C3B9E52-4A1D-4F6E-9B8A-2D5E1C0F7A34}_is1'
 $uninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"
@@ -74,6 +94,8 @@ function Test-UserData {
     (Test-Path (Join-Path $roaming 'models\test-model.onnx')) -and
     (Test-Path (Join-Path $local 'cache.txt'))
 }
+
+Test-CablePin
 
 $Setup = (Resolve-Path $Setup).Path
 if ($Previous) { $Previous = (Resolve-Path $Previous).Path }

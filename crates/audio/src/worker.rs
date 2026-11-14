@@ -365,7 +365,7 @@ mod tests {
 
     /// Passthrough state for `cfg` (processor rate = input rate).
     fn passthrough(cfg: &WorkerConfig) -> State {
-        State::new(cfg, Box::new(Passthrough::new(cfg.in_rate)))
+        State::new(cfg, Box::new(Passthrough))
             .map_err(|(e, _)| e)
             .unwrap()
     }
@@ -393,7 +393,7 @@ mod tests {
     }
 
     impl Processor for Fake {
-        fn out_rate(&self) -> u32 {
+        fn out_rate(&self, _in_rate: u32) -> u32 {
             self.rate
         }
 
@@ -425,6 +425,15 @@ mod tests {
         (0..frames)
             .map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin())
             .collect()
+    }
+
+    /// Upward zero crossings per second.
+    fn tone_freq(samples: &[f32], rate: u32) -> f32 {
+        let crossings = samples
+            .windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count();
+        crossings as f32 / (samples.len() as f32 / rate as f32)
     }
 
     /// Feeds `mono` (duplicated to `channels`) in blocks of `block` frames and collects every output.
@@ -569,6 +578,90 @@ mod tests {
     }
 
     #[test]
+    fn original_voice_reaches_cable_and_monitor() {
+        const IN_RATE: u32 = 44_100;
+        const CABLE_RATE: u32 = 48_000;
+        let c = WorkerConfig {
+            in_rate: IN_RATE,
+            in_channels: 2,
+            proc_rate: Passthrough.out_rate(IN_RATE),
+            outputs: vec![
+                OutputConfig {
+                    kind: OutputKind::Cable,
+                    rate: CABLE_RATE,
+                },
+                OutputConfig {
+                    kind: OutputKind::Monitor,
+                    rate: IN_RATE,
+                },
+            ],
+        };
+        assert_eq!(c.proc_rate, IN_RATE);
+        let state = State::new(&c, Box::new(Passthrough))
+            .map_err(|(e, _)| e)
+            .unwrap();
+        let (mut in_prod, in_cons) = ring(2 * IN_RATE as usize);
+        let (cable_prod, mut cable_cons) = ring(2 * CABLE_RATE as usize);
+        let (monitor_prod, mut monitor_cons) = ring(2 * IN_RATE as usize);
+        let shared = Arc::new(Shared::new());
+        shared.set_monitor_gain(0.5);
+        let stop = Arc::new(AtomicBool::new(false));
+        let outputs = vec![cable_prod, monitor_prod];
+        let handle = spawn(state, in_cons, outputs, shared, stop.clone()).unwrap();
+
+        // One second of a 1 kHz tone at 0.5, as stereo, in 10 ms chunks. Input queued before the
+        // worker is ready is skipped, so a little less than the whole second comes out.
+        let tone = sine(IN_RATE, 1000.0, 0.5, IN_RATE as usize);
+        let (mut cable, mut monitor) = (Vec::new(), Vec::new());
+        let mut stereo = Vec::new();
+        for chunk in tone.chunks(441) {
+            stereo.clear();
+            stereo.extend(chunk.iter().flat_map(|&s| [s, s]));
+            assert_eq!(in_prod.push_slice(&stereo), stereo.len());
+            std::thread::sleep(Duration::from_millis(5));
+            cable.extend(cable_cons.pop_iter());
+            monitor.extend(monitor_cons.pop_iter());
+        }
+        // The worker finishes the block it is in before it sees `stop`.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while in_prod.occupied_len() > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop.store(true, Relaxed);
+        handle.join().unwrap();
+        cable.extend(cable_cons.pop_iter());
+        monitor.extend(monitor_cons.pop_iter());
+
+        let cable_prime = (CABLE_RATE * PRIME_MS / 1000) as usize;
+        let monitor_prime = (IN_RATE * PRIME_MS / 1000) as usize;
+        let half_second = |rate: u32| rate as usize / 2;
+        assert!(
+            cable.len() >= cable_prime + half_second(CABLE_RATE),
+            "cable got {}",
+            cable.len()
+        );
+        assert!(
+            monitor.len() >= monitor_prime + half_second(IN_RATE),
+            "monitor got {}",
+            monitor.len()
+        );
+
+        // Past the priming silence and the resampler's first 100 ms.
+        let cable = &cable[cable_prime + CABLE_RATE as usize / 10..];
+        let freq = tone_freq(cable, CABLE_RATE);
+        assert!((freq - 1000.0).abs() <= 20.0, "cable freq {freq}");
+        let peak = measure(cable).peak;
+        assert!((peak - 0.5).abs() <= 0.05, "cable peak {peak}");
+
+        // The monitor runs at the input rate (no resampler), at half volume.
+        let monitor = &monitor[monitor_prime..];
+        let freq = tone_freq(monitor, IN_RATE);
+        assert!((freq - 1000.0).abs() <= 20.0, "monitor freq {freq}");
+        let peak = measure(monitor).peak;
+        assert!((peak - 0.25).abs() <= 0.03, "monitor peak {peak}");
+    }
+
+    #[test]
     fn end_to_end_sums_parts() {
         let parts = LatencyParts {
             input_backlog: 4800,
@@ -676,7 +769,7 @@ mod tests {
     }
 
     impl Processor for SlowBlocks {
-        fn out_rate(&self) -> u32 {
+        fn out_rate(&self, _in_rate: u32) -> u32 {
             16_000
         }
 

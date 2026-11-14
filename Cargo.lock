@@ -4474,6 +4474,7 @@ dependencies = [
  "image",
  "raw-window-handle",
  "rfd",
+ "ringbuf",
  "serde",
  "serde_json",
  "sha2",

@@ -12,6 +12,7 @@ mod instance;
 mod model;
 mod paths;
 mod self_test;
+mod source;
 mod status_bar;
 mod switch;
 mod tabs;

@@ -12,16 +12,18 @@ use crate::model::LoadResult;
 pub enum SwitchPlan {
     /// No pipeline is loaded: load ContentVec, RMVPE and the generator.
     LoadAll,
-    /// Stopped with a pipeline: load the new generator and swap it in.
+    /// The pipeline is idle (stopped, or the original voice is running): load the new generator and
+    /// swap it in.
     Swap,
-    /// Running: load the new generator while the old voice plays, then stop, swap and start.
+    /// A session is streaming the model: load the new generator while the old voice plays, then
+    /// stop, swap and start.
     SwapWithRestart,
 }
 
-pub fn plan_switch(has_pipeline: bool, running: bool) -> SwitchPlan {
+pub fn plan_switch(has_pipeline: bool, in_session: bool) -> SwitchPlan {
     if !has_pipeline {
         SwitchPlan::LoadAll
-    } else if running {
+    } else if in_session {
         SwitchPlan::SwapWithRestart
     } else {
         SwitchPlan::Swap
@@ -46,6 +48,7 @@ mod tests {
 
     #[test]
     fn plan_switch_cases() {
+        // (has_pipeline, in_session): a session that sends the original voice does not hold the model.
         assert_eq!(plan_switch(false, false), SwitchPlan::LoadAll);
         assert_eq!(plan_switch(false, true), SwitchPlan::LoadAll);
         assert_eq!(plan_switch(true, false), SwitchPlan::Swap);

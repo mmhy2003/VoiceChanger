@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn start_unknown_device_returns_processor() {
-        let processor = Box::new(Passthrough::new(48_000));
+        let processor = Box::new(Passthrough);
         match control().start(&unknown_input(), processor) {
             Err((StartError::DeviceNotFound(name), Some(_))) => {
                 assert_eq!(name, "No Such Device 7f3a")
@@ -185,7 +185,7 @@ mod tests {
         ctl.shutdown();
         assert!(!ctl.is_alive());
         assert!(ctl.list().is_none());
-        let processor = Box::new(Passthrough::new(48_000));
+        let processor = Box::new(Passthrough);
         match ctl.start(&unknown_input(), processor) {
             Err((StartError::BuildStream { device, reason }, Some(_))) => {
                 assert_eq!(device, "audio control thread");

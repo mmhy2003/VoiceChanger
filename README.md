@@ -55,6 +55,12 @@ The `--stream` form runs the real-time streamer over the file and prints the per
 - Only RVC WebUI ONNX exports with F0 (fp32) are supported. fp16 exports and models without F0 are rejected.
 - `--provider dml` (the default) uses DirectML. `--provider cuda` needs a CUDA build of `onnxruntime.dll` in place of the DirectML one. If a provider fails, the engine falls back to the CPU with a warning.
 
+## Original voice and Bypass
+
+The Voice tab's Model list starts with **Original voice (no model)**. With it selected, Start sends your microphone to the virtual cable unchanged, so other apps hear your real voice. No voice model and no GPU are used, and it is what a fresh install starts on.
+
+With a voice selected, **Bypass: send my original voice** switches a running voice to your original voice and back. It is on the Voice tab and in the tray menu. The model stays loaded; the audio restarts underneath, so there is a short gap. Pitch and the noise gate apply to converted voices only. Bypass is not saved: it is off each time VoiceChanger starts.
+
 ## Model library and settings
 
 Import a voice on the Models tab with **Import…** or by dropping `.onnx` files on the window. Each model is checked and copied into the library. If the model does not say its sample rate, the app asks for it (32, 40 or 48 kHz). A dropped or picked `.pth` or `.zip` is not imported: the app offers to open it in the Convert tab instead. Dropping it on the Convert tab opens it there directly.
@@ -70,7 +76,7 @@ VoiceChanger keeps its files in four folders:
 
 The global Start/Stop hotkey is off by default. Set it in Settings → General; the combination needs at least one modifier (Ctrl, Alt or Shift); Esc cancels recording.
 
-Closing the window hides VoiceChanger to the system tray, where the voice keeps running. Click the tray icon to open the window, or right-click it for Open VoiceChanger, Start, Stop and Exit; only Exit closes the app. Settings → General → **Start in the tray** launches it with only the tray icon.
+Closing the window hides VoiceChanger to the system tray, where the voice keeps running. Click the tray icon to open the window, or right-click it for Open VoiceChanger, Start, Stop, Bypass and Exit; only Exit closes the app. Settings → General → **Start in the tray** launches it with only the tray icon.
 
 If `settings.toml` or `library.toml` cannot be read, it is kept as `settings.toml.bad` or `library.toml.bad` and the app starts with defaults or an empty library. Model files are never deleted.
 

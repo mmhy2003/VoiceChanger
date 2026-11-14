@@ -270,15 +270,17 @@ fn apply(app: &mut VcApp, action: Action) {
     }
 }
 
-/// Deletes a model and its file. The active model can only go while stopped; the slot is emptied
-/// first so the file is not in use.
+/// Deletes a model and its file. The active model can only go while stopped; a slot that holds
+/// the model is emptied first so the file is not in use.
 fn delete(app: &mut VcApp, id: &str) {
     let is_active = app.prefs.last_model.as_deref() == Some(id);
     if let Some(reason) = delete_blocked(is_active, app.is_running()) {
         app.notices.push(Notice::Error(reason.to_string()));
         return;
     }
-    if is_active {
+    // After "Original voice" the slot may still hold this model; its file must not be in use.
+    let loaded = app.model.info().is_some_and(|info| info.id == id);
+    if is_active || loaded {
         app.model = ModelSlot::Empty;
         app.pending = None;
     }

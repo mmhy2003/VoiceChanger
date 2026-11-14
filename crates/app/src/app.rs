@@ -528,16 +528,20 @@ impl VcApp {
             self.banner = Some(format!("The model file for \"{}\" is missing.", entry.name));
             return;
         }
-        if self.prefs.last_model.as_deref() == Some(id) && self.model.info().is_some() {
-            // Already active.
+        if self.model.info().is_some_and(|info| info.id == id) {
+            // Already loaded, also after Original voice: nothing to load.
             self.pending = None;
+            if self.prefs.last_model.as_deref() != Some(id) {
+                self.activate(&entry);
+            }
             return;
         }
         let (path, perf) = (self.library.model_path(&entry), self.state.perf);
-        match plan_switch(self.model.info().is_some(), self.is_running()) {
+        match plan_switch(self.model.info().is_some(), self.model.is_in_session()) {
             SwitchPlan::LoadAll => {
                 self.pending = None;
                 self.model = match model::spawn_load(
+                    entry.id.clone(),
                     entry.name.clone(),
                     path,
                     Some(entry.sample_rate),
@@ -551,6 +555,7 @@ impl VcApp {
             }
             SwitchPlan::Swap | SwitchPlan::SwapWithRestart => {
                 match model::spawn_generator_load(
+                    entry.id.clone(),
                     entry.name.clone(),
                     path,
                     entry.sample_rate,
@@ -580,8 +585,8 @@ impl VcApp {
             pitch_for(&entry.id, &self.prefs.pitch_by_model, entry.default_pitch);
     }
 
-    /// Swaps in a pending generator once it is loaded, with a quick stop and start while running.
-    /// A failed load keeps the old voice.
+    /// Swaps in a pending generator once it is loaded, with a quick stop and start when a session
+    /// holds the model. A failed load keeps the old voice.
     fn poll_switch(&mut self) {
         let Some(pending) = &self.pending else {
             return;
@@ -603,8 +608,8 @@ impl VcApp {
                 return;
             }
         };
-        let running = self.is_running();
-        if running {
+        let in_session = self.model.is_in_session();
+        if in_session {
             self.stop();
         }
         if let Some((p, slot_info)) = self.model.ready_mut() {
@@ -616,7 +621,7 @@ impl VcApp {
         } else {
             self.banner = Some("Could not switch: the model was unloaded.".to_string());
         }
-        if running {
+        if in_session {
             self.start();
         }
     }
@@ -698,8 +703,12 @@ impl VcApp {
         self.output_meter.reset();
     }
 
-    /// Returns the pipeline inside a stopped session's processor to the model slot.
+    /// Returns the pipeline inside a stopped session's processor to the model slot. A session that
+    /// sent the original voice has nothing to give back.
     fn recover(&mut self, p: Option<Box<dyn Processor>>) {
+        if !self.model.is_in_session() {
+            return;
+        }
         let ep = p.and_then(|p| {
             (p as Box<dyn Any>)
                 .downcast::<EngineProcessor<Pipeline>>()

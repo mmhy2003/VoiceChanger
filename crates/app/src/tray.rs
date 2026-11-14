@@ -1,12 +1,13 @@
 //! The system tray icon: its menu, its two icons, and the rules for what a click and a close do.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the tray icon in the next VC-121 step")
-)]
+
+use std::sync::mpsc::{self, Receiver};
 
 use image::imageops::{self, FilterType};
 use image::{ImageFormat, Rgba, RgbaImage};
-use tray_icon::{MouseButton, MouseButtonState};
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+
+use crate::window::Waker;
 
 /// What the user asked for from the tray.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +123,109 @@ pub fn icon_rgba(running: bool) -> RgbaImage {
         }
     }
     icon
+}
+
+/// The tray icon and its menu. It lives on the UI thread, whose message loop delivers the clicks.
+pub struct Tray {
+    icon: TrayIcon,
+    start: MenuItem,
+    stop: MenuItem,
+    stopped_icon: Icon,
+    running_icon: Icon,
+    rx: Receiver<TrayCommand>,
+    /// What the tray shows now, so `sync` only calls Windows when it changes.
+    shown: TrayState,
+}
+
+fn to_icon(image: RgbaImage) -> Result<Icon, String> {
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).map_err(|e| e.to_string())
+}
+
+impl Tray {
+    /// Adds the icon to the system tray. A click queues a command and wakes the app.
+    pub fn new(waker: Waker) -> Result<Self, String> {
+        let shown = tray_state(false, true, None);
+        let item = |id: &str, text: &str, enabled: bool| {
+            MenuItem::with_id(MenuId::new(id), text, enabled, None)
+        };
+        let open = item(OPEN_ID, "Open VoiceChanger", true);
+        let start = item(START_ID, "Start", shown.start_enabled);
+        let stop = item(STOP_ID, "Stop", shown.running);
+        let exit = item(EXIT_ID, "Exit", true);
+        let menu = Menu::with_items(&[&open, &start, &stop, &exit]).map_err(|e| e.to_string())?;
+        let stopped_icon = to_icon(icon_rgba(false))?;
+        let running_icon = to_icon(icon_rgba(true))?;
+
+        let (tx, rx) = mpsc::channel();
+        let (menu_tx, menu_waker) = (tx.clone(), waker.clone());
+        MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+            if let Some(command) = command_for_menu(&e.id.0) {
+                let _ = menu_tx.send(command);
+                menu_waker.wake();
+            }
+        }));
+        TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } = e
+                && let Some(command) = command_for_click(button, button_state)
+            {
+                let _ = tx.send(command);
+                waker.wake();
+            }
+        }));
+
+        let icon = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .with_tooltip(&shown.tooltip)
+            .with_icon(stopped_icon.clone())
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            icon,
+            start,
+            stop,
+            stopped_icon,
+            running_icon,
+            rx,
+            shown,
+        })
+    }
+
+    /// The commands clicked since the last call.
+    pub fn poll(&self) -> Vec<TrayCommand> {
+        self.rx.try_iter().collect()
+    }
+
+    /// Shows `state`: the greyed items, the icon and the tooltip. Does nothing when it is
+    /// what the tray already shows.
+    pub fn sync(&mut self, state: TrayState) {
+        if state == self.shown {
+            return;
+        }
+        self.start.set_enabled(state.start_enabled);
+        self.stop.set_enabled(state.running);
+        if state.running != self.shown.running {
+            let icon = if state.running {
+                &self.running_icon
+            } else {
+                &self.stopped_icon
+            };
+            if let Err(e) = self.icon.set_icon(Some(icon.clone())) {
+                tracing::warn!("cannot change the tray icon: {e}");
+            }
+        }
+        if state.tooltip != self.shown.tooltip
+            && let Err(e) = self.icon.set_tooltip(Some(&state.tooltip))
+        {
+            tracing::warn!("cannot change the tray tooltip: {e}");
+        }
+        self.shown = state;
+    }
 }
 
 #[cfg(test)]

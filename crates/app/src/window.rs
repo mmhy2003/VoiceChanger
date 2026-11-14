@@ -206,6 +206,11 @@ impl MainWindow {
             .is_some_and(|watch| watch.requested.swap(false, Ordering::Relaxed))
     }
 
+    /// Whether the window may be hidden: only when the ticker can keep the app running.
+    pub fn can_hide(&self) -> bool {
+        self.ticker.is_some()
+    }
+
     /// Stops the ticker.
     pub fn stop(&mut self) {
         if let Some(ticker) = self.ticker.take() {
@@ -351,6 +356,20 @@ mod tests {
         assert!(!main.take_end_session(), "the flag is taken once");
         send(WM_ENDSESSION, 1, 0);
         assert!(main.take_end_session());
+    }
+
+    #[test]
+    fn can_hide_only_with_a_ticker() {
+        let without = MainWindow::new(&egui::Context::default(), None);
+        assert!(
+            !without.can_hide(),
+            "no handle, so nothing could bring it back"
+        );
+        let window = TestWindow::new(false);
+        let mut main = MainWindow::new(&egui::Context::default(), window.id());
+        assert!(main.can_hide());
+        main.stop();
+        assert!(!main.can_hide(), "the ticker is stopped");
     }
 
     #[test]

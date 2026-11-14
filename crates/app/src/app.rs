@@ -32,6 +32,7 @@ use crate::tabs;
 use crate::tabs::convert::ConvertUi;
 use crate::tabs::models::ModelsUi;
 use crate::tabs::voice::start_hint;
+use crate::tray::{CloseAction, Tray, TrayCommand, close_action, tray_state};
 use crate::update::client::LATEST_URL;
 use crate::update::schedule::{check_due, next_check, unix_now};
 use crate::update::state::{Action, Phase, UpdateState};
@@ -310,6 +311,12 @@ pub struct VcApp {
     instance: Option<Primary>,
     /// Wakes the hidden window and notices Windows ending the session.
     window: MainWindow,
+    /// The tray icon and its menu; `None` when it could not be made, and after exit.
+    tray: Option<Tray>,
+    /// The window is hidden and only the tray icon shows.
+    in_tray: bool,
+    /// The app is exiting: the next close request is not turned into "hide".
+    quitting: bool,
 }
 
 /// What `main` hands the app: its folders, the loaded settings, any notes from loading them and
@@ -341,8 +348,18 @@ impl VcApp {
             .chain(&state.notes)
             .map(String::as_str)
             .collect();
-        let window = MainWindow::new(&cc.egui_ctx, window::hwnd_of(cc));
+        let hwnd = window::hwnd_of(cc);
+        let window = MainWindow::new(&cc.egui_ctx, hwnd);
         let waker = window.waker();
+        // The window is never hidden without a tray icon and a ticker to bring it back.
+        let tray = if window.can_hide() {
+            Tray::new(waker.clone())
+                .inspect_err(|e| tracing::error!("no tray icon: {e}"))
+                .ok()
+        } else {
+            tracing::warn!("no window handle: closing the window exits the app");
+            None
+        };
         let mut hotkeys = Hotkeys::new(waker.clone());
         // A saved hotkey that fails is kept, so it is tried again next launch.
         let hotkey_error = startup.config.hotkey.as_deref().and_then(|s| {
@@ -408,6 +425,9 @@ impl VcApp {
             started: Instant::now(),
             instance,
             window,
+            tray,
+            in_tray: false,
+            quitting: false,
         };
         // Load the last model; the app never starts streaming by itself.
         if let Some(id) = app.prefs.last_model.clone()
@@ -656,11 +676,7 @@ impl VcApp {
     fn toggle_from_hotkey(&mut self) {
         if self.is_running() {
             self.stop();
-        } else if let Some(hint) = start_hint(
-            self.audio.is_alive(),
-            start_blocker(&self.state.devices, &self.state.selection),
-            self.model.is_ready(),
-        ) {
+        } else if let Some(hint) = self.start_blocked() {
             self.banner = Some(format!("Hotkey: cannot start. {hint}"));
         } else {
             self.start();
@@ -773,7 +789,7 @@ impl VcApp {
         match install::spawn_installer(path, &self.dirs.logs.join("update-install.log")) {
             Ok(()) => {
                 self.updates.phase = Phase::Installing;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quit(ctx);
             }
             Err(e) => {
                 tracing::warn!("cannot start the installer {}: {e}", path.display());
@@ -807,18 +823,136 @@ impl VcApp {
             unix_now(),
             self.started.elapsed(),
         ) {
-            ctx.request_repaint_after(wait);
+            self.repaint_after(ctx, wait);
         }
         // Keeps the progress bar and the Checking… label moving.
         if self.updates.busy() {
-            ctx.request_repaint_after(Duration::from_millis(250));
+            self.repaint_after(ctx, Duration::from_millis(250));
         }
     }
 
-    /// Brings the window to the front.
+    /// Why Start cannot be pressed now, as on the Voice tab; `None` when it can.
+    fn start_blocked(&self) -> Option<&'static str> {
+        start_hint(
+            self.audio.is_alive(),
+            start_blocker(&self.state.devices, &self.state.selection),
+            self.model.is_ready(),
+        )
+    }
+
+    /// Brings the window back from the tray, or to the front.
     fn show_window(&mut self, ctx: &egui::Context) {
+        self.in_tray = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Hides the window; the tray icon is the way back.
+    fn hide_to_tray(&mut self, ctx: &egui::Context) {
+        self.in_tray = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        // A hidden frame right after hiding puts eframe's event loop back to waiting.
+        self.window.waker().post_paint();
+    }
+
+    /// Really exits: the next close request is not turned into "hide to the tray".
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        // The close request is seen on the next frame; a hidden window must be woken for it.
+        self.window.waker().wake();
+    }
+
+    /// Start from the tray menu. If it is blocked or fails, the banner says why and the
+    /// window opens on the Voice tab.
+    fn start_from_tray(&mut self, ctx: &egui::Context) {
+        if self.is_running() {
+            return;
+        }
+        match self.start_blocked() {
+            Some(hint) => self.banner = Some(format!("Tray: cannot start. {hint}")),
+            None => self.start(),
+        }
+        if !self.is_running() {
+            self.tab = Tab::Voice;
+            self.show_window(ctx);
+        }
+    }
+
+    /// Carries out the tray's commands, a second launch's "show" and Windows ending the session.
+    fn poll_tray(&mut self, ctx: &egui::Context) {
+        let commands = self.tray.as_ref().map(Tray::poll).unwrap_or_default();
+        for command in commands {
+            match command {
+                TrayCommand::Open => self.show_window(ctx),
+                TrayCommand::Start => self.start_from_tray(ctx),
+                TrayCommand::Stop => self.stop(),
+                TrayCommand::Exit => self.quit(ctx),
+            }
+        }
+        if self.instance.as_ref().is_some_and(Primary::take_show) {
+            self.show_window(ctx);
+        }
+        if self.window.take_end_session() {
+            self.quit(ctx);
+        }
+    }
+
+    /// The close button hides the window to the tray; a real exit lets eframe close it.
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        match close_action(self.quitting, self.in_tray, self.tray.is_some()) {
+            CloseAction::Exit => {}
+            CloseAction::Hide => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.hide_to_tray(ctx);
+            }
+        }
+    }
+
+    /// Shows the app's state on the tray icon.
+    fn sync_tray(&mut self) {
+        let state = tray_state(
+            self.is_running(),
+            self.start_blocked().is_some(),
+            self.model.info().map(|info| info.name.as_str()),
+        );
+        if let Some(tray) = &mut self.tray {
+            tray.sync(state);
+        }
+    }
+
+    /// Asks for the next frame. Not in the tray: Windows never paints a hidden window, so
+    /// eframe would poll for the frame in a busy loop. The ticker runs the frames there.
+    fn repaint_after(&self, ctx: &egui::Context, delay: Duration) {
+        if !self.in_tray {
+            ctx.request_repaint_after(delay);
+        }
+    }
+
+    /// The tab bar, the status bar, the open tab and the update window.
+    fn draw(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+            update::ui::banner(ui, self);
+            ui.horizontal(|ui| {
+                for t in Tab::ALL {
+                    ui.selectable_value(&mut self.tab, t, t.label());
+                }
+            });
+        });
+        if let Some(snapshot) = self.status_snapshot() {
+            egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar::show(ui, &snapshot));
+        }
+        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+            Tab::Voice => tabs::voice::show(ui, self),
+            Tab::Models => tabs::models::show(ui, self),
+            Tab::Convert => tabs::convert::show(ui, self),
+            Tab::Settings => tabs::settings::show(ui, self),
+        });
+        update::ui::window(ctx, self);
     }
 }
 
@@ -841,14 +975,7 @@ impl eframe::App for VcApp {
         self.poll_import();
         self.poll_convert();
         self.poll_updates(ctx);
-        if self.instance.as_ref().is_some_and(Primary::take_show) {
-            self.show_window(ctx);
-        }
-        if self.window.take_end_session() {
-            // Windows or an installer is closing the app: exit as if the window was closed.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            self.window.waker().wake();
-        }
+        self.poll_tray(ctx);
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
         if self.hotkeys.take_pressed() {
@@ -866,24 +993,10 @@ impl eframe::App for VcApp {
         // A volume change is not a selection change, so it doesn't restart the session.
         let before = self.state.selection.clone();
         let provider_before = self.state.perf.provider();
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            update::ui::banner(ui, self);
-            ui.horizontal(|ui| {
-                for t in Tab::ALL {
-                    ui.selectable_value(&mut self.tab, t, t.label());
-                }
-            });
-        });
-        if let Some(snapshot) = self.status_snapshot() {
-            egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar::show(ui, &snapshot));
+        // Nothing is drawn in the tray, so no widget asks for a repaint there.
+        if !self.in_tray {
+            self.draw(ctx);
         }
-        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::Voice => tabs::voice::show(ui, self),
-            Tab::Models => tabs::models::show(ui, self),
-            Tab::Convert => tabs::convert::show(ui, self),
-            Tab::Settings => tabs::settings::show(ui, self),
-        });
-        update::ui::window(ctx, self);
         // Block, context and crossfade restart the stream on release; the model is kept.
         if self.is_running() && (self.state.selection != before || self.restart_requested) {
             self.stop();
@@ -899,9 +1012,10 @@ impl eframe::App for VcApp {
             self.model = ModelSlot::Empty;
             self.select_model(&id);
         }
+        self.handle_close(ctx);
 
         if self.is_running() {
-            ctx.request_repaint_after(Duration::from_millis(33));
+            self.repaint_after(ctx, Duration::from_millis(33));
         } else if self.model.is_loading()
             || self.pending.is_some()
             || self.importer.is_busy()
@@ -910,7 +1024,7 @@ impl eframe::App for VcApp {
             || self.converter.is_busy()
             || self.convert_ui.is_waiting()
         {
-            ctx.request_repaint_after(Duration::from_millis(100));
+            self.repaint_after(ctx, Duration::from_millis(100));
         }
 
         let cfg = self.state.to_config(&self.prefs);
@@ -918,8 +1032,9 @@ impl eframe::App for VcApp {
             self.write_config(cfg);
         }
         if self.save.is_pending() {
-            ctx.request_repaint_after(Duration::from_millis(250));
+            self.repaint_after(ctx, Duration::from_millis(250));
         }
+        self.sync_tray();
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -929,6 +1044,8 @@ impl eframe::App for VcApp {
         }
         self.stop();
         self.audio.shutdown();
+        // eframe ends the process without dropping the app, so the icon is removed here.
+        self.tray = None;
         self.window.stop();
     }
 }

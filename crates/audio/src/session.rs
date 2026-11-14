@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
-use crate::devices::{DeviceRef, Selection};
+use crate::devices::{DeviceRef, Selection, device_name};
 use crate::processor::Processor;
 use crate::ring::{self, HeapCons, HeapProd};
 use crate::shared::{Endpoint, Shared, StreamStatus};
@@ -90,7 +90,7 @@ where
     }
     devices
         .ok()
-        .and_then(|mut ds| ds.find(|d| d.description().is_ok_and(|desc| desc.name() == r.name)))
+        .and_then(|mut ds| ds.find(|d| device_name(d).is_some_and(|n| n == r.name)))
         .ok_or_else(|| StartError::DeviceNotFound(r.name.clone()))
 }
 

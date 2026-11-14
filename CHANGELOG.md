@@ -10,6 +10,9 @@ and the project uses `X.Y.Z` versions as described in [AGENTS.md](AGENTS.md).
 ### Added
 - Original voice and Bypass: the Voice tab's Model list now starts with **Original voice (no model)**, so Start works without a voice model and sends your microphone to the virtual cable unchanged. With a voice selected, **Bypass: send my original voice** (Voice tab and tray menu) flips a running voice to your original voice and back without unloading the model; the audio restarts with a short gap. The status line, the status bar and the tray tooltip say when the original voice is being sent.
 
+### Changed
+- Audio devices are named as in Windows, e.g. `Microphone (Realtek(R) Audio)`, in Settings and in messages, so two microphones can be told apart. Virtual Audio Cable lines are recognised as virtual cables again.
+
 ## [1.1.0] - 2026-11-14
 
 ### Added

@@ -341,9 +341,26 @@ pub fn list_devices() -> DeviceList {
     )
 }
 
+/// `"{name} ({device})"`, as Windows Sound settings shows it, e.g. `Microphone (Realtek(R) Audio)`.
+/// Just `name` when `device` is missing, blank or already part of `name`.
+fn full_name(name: &str, device: Option<&str>) -> String {
+    match device.map(str::trim) {
+        Some(device) if !device.is_empty() && !name.contains(device) => {
+            format!("{name} ({device})")
+        }
+        _ => name.to_string(),
+    }
+}
+
+/// The device's full name (type and device name); `None` if its description cannot be read.
+pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
+    let desc = d.description().ok()?;
+    Some(full_name(desc.name(), desc.driver()))
+}
+
 /// The device's ID (empty if it cannot be read) and name; `None` without a name.
 fn device_info(d: &cpal::Device) -> Option<DeviceInfo> {
-    let name = d.description().ok()?.name().to_string();
+    let name = device_name(d)?;
     let id = d.id().map(|i| i.to_string()).unwrap_or_default();
     Some(DeviceInfo { id, name })
 }
@@ -735,6 +752,36 @@ mod tests {
             ..valid.clone()
         };
         assert_eq!(start_blocker(&l, &renamed), None);
+    }
+
+    #[test]
+    fn full_name_joins_type_and_device() {
+        assert_eq!(full_name("Microphone", Some("Realtek(R) Audio")), MIC);
+        assert_eq!(full_name("Speakers", Some("Realtek(R) Audio")), SPEAKERS);
+    }
+
+    #[test]
+    fn full_name_without_device_is_the_type() {
+        assert_eq!(full_name("Microphone", None), "Microphone");
+        assert_eq!(full_name("Microphone", Some("")), "Microphone");
+        assert_eq!(full_name("Microphone", Some("  ")), "Microphone");
+    }
+
+    #[test]
+    fn full_name_keeps_a_name_that_already_has_the_device() {
+        assert_eq!(full_name(MIC, Some("Realtek(R) Audio")), MIC);
+    }
+
+    #[test]
+    fn full_name_lets_virtual_cables_be_recognised() {
+        assert!(is_virtual_cable(&full_name(
+            "Line 1",
+            Some("Virtual Audio Cable")
+        )));
+        assert!(!is_virtual_cable(&full_name(
+            "Speakers",
+            Some("Realtek(R) Audio")
+        )));
     }
 
     #[test]

@@ -39,7 +39,7 @@ use crate::update::version::Version;
 use crate::update::worker::{Command, Updater, WorkerConfig};
 use crate::update::{self, install};
 use crate::widgets::MeterState;
-use crate::window::{self, Waker};
+use crate::window::{self, MainWindow};
 
 /// Window title, including the app version.
 pub fn window_title() -> String {
@@ -308,6 +308,8 @@ pub struct VcApp {
     started: Instant,
     /// The single-instance guard; it hears a second launch.
     instance: Option<Primary>,
+    /// Wakes the hidden window and notices Windows ending the session.
+    window: MainWindow,
 }
 
 /// What `main` hands the app: its folders, the loaded settings, any notes from loading them and
@@ -339,7 +341,8 @@ impl VcApp {
             .chain(&state.notes)
             .map(String::as_str)
             .collect();
-        let waker = Waker::new(&cc.egui_ctx, window::hwnd_of(cc));
+        let window = MainWindow::new(&cc.egui_ctx, window::hwnd_of(cc));
+        let waker = window.waker();
         let mut hotkeys = Hotkeys::new(waker.clone());
         // A saved hotkey that fails is kept, so it is tried again next launch.
         let hotkey_error = startup.config.hotkey.as_deref().and_then(|s| {
@@ -404,6 +407,7 @@ impl VcApp {
             updater,
             started: Instant::now(),
             instance,
+            window,
         };
         // Load the last model; the app never starts streaming by itself.
         if let Some(id) = app.prefs.last_model.clone()
@@ -840,6 +844,11 @@ impl eframe::App for VcApp {
         if self.instance.as_ref().is_some_and(Primary::take_show) {
             self.show_window(ctx);
         }
+        if self.window.take_end_session() {
+            // Windows or an installer is closing the app: exit as if the window was closed.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.window.waker().wake();
+        }
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
         if self.hotkeys.take_pressed() {
@@ -920,6 +929,7 @@ impl eframe::App for VcApp {
         }
         self.stop();
         self.audio.shutdown();
+        self.window.stop();
     }
 }
 

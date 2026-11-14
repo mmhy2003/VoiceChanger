@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon-256.png" width="128" alt="VoiceChanger logo"></p>
+
 # VoiceChanger
 
 Real-time AI voice changer for Windows, written in Rust. Runs RVC voice models locally on your GPU via ONNX Runtime, with no Python required.
@@ -31,6 +33,8 @@ The installer uses DirectML only. CUDA needs a CUDA build of `onnxruntime.dll` i
     cargo deny check
 
 The binary is `target\release\voicechanger.exe`.
+
+The app icon (`assets/icon.ico`, `assets/icon-256.png`) is generated from `assets/logo/voicechanger.png` with `cargo xtask gen-icon`; run it after changing the logo and commit the results. A test fails when they are out of date.
 
 ## Base models
 

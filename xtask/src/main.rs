@@ -2,18 +2,20 @@
 
 mod fetch;
 mod gen_onnx;
+mod icon;
 mod manifest;
 
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cargo xtask <fetch-models|fetch-test-models|gen-onnx>";
+const USAGE: &str = "usage: cargo xtask <fetch-models|fetch-test-models|gen-onnx|gen-icon>";
 
 fn main() -> ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("fetch-models") => fetch_models(),
         Some("fetch-test-models") => fetch_test_models(),
         Some("gen-onnx") => gen_onnx(),
+        Some("gen-icon") => gen_icon(),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -67,4 +69,18 @@ fn gen_onnx() -> Result<(), String> {
     });
     let _ = std::fs::remove_dir_all(&tmp);
     result
+}
+
+/// Regenerates `assets/icon.ico` and `assets/icon-256.png` from `assets/logo/voicechanger.png`.
+fn gen_icon() -> Result<(), String> {
+    let root = root()?;
+    let source = root.join(icon::SOURCE);
+    let bytes = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let icons = icon::build(&bytes).map_err(|e| format!("{}: {e}", source.display()))?;
+    for (rel, data) in [(icon::ICO, &icons.ico), (icon::PNG256, &icons.png256)] {
+        let dest = root.join(rel);
+        std::fs::write(&dest, data).map_err(|e| format!("{}: {e}", dest.display()))?;
+        println!("wrote {}", dest.display());
+    }
+    Ok(())
 }

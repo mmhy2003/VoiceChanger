@@ -39,6 +39,7 @@ MinVersion=10.0.19045
 CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\{#AppExe}
+SetupIconFile={#Root}\assets\icon.ico
 UninstallDisplayName={#AppName}
 WizardStyle=modern
 Compression=lzma2/ultra64

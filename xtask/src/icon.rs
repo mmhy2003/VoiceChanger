@@ -208,4 +208,22 @@ mod tests {
         let err = build_err(&png_with_rect(300, 300, None));
         assert!(err.contains("fully transparent"), "{err}");
     }
+
+    #[test]
+    fn generated_icons_match_committed() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let source =
+            std::fs::read(root.join(SOURCE)).expect("assets/logo/voicechanger.png is missing");
+        let icons = build(&source).unwrap();
+        for (rel, generated) in [(ICO, &icons.ico), (PNG256, &icons.png256)] {
+            let committed = std::fs::read(root.join(rel))
+                .unwrap_or_else(|_| panic!("{rel} is missing; run `cargo xtask gen-icon`"));
+            assert!(
+                *generated == committed,
+                "{rel} is out of date; run `cargo xtask gen-icon`"
+            );
+        }
+    }
 }

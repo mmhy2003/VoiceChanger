@@ -317,6 +317,8 @@ pub struct VcApp {
     in_tray: bool,
     /// The app is exiting: the next close request is not turned into "hide".
     quitting: bool,
+    /// "Start in the tray": hide the window once its first frame has minimised it.
+    start_in_tray: bool,
 }
 
 /// What `main` hands the app: its folders, the loaded settings, any notes from loading them and
@@ -331,6 +333,7 @@ pub struct Startup {
 impl VcApp {
     pub fn new(cc: &eframe::CreationContext<'_>, startup: Startup) -> Self {
         // egui 0.32's ViewportBuilder cannot open minimised; the command runs after the first frame.
+        // With a tray icon the window is hidden on the next frame.
         if startup.config.start_minimised {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -360,6 +363,7 @@ impl VcApp {
             tracing::warn!("no window handle: closing the window exits the app");
             None
         };
+        let start_in_tray = startup.config.start_minimised && tray.is_some();
         let mut hotkeys = Hotkeys::new(waker.clone());
         // A saved hotkey that fails is kept, so it is tried again next launch.
         let hotkey_error = startup.config.hotkey.as_deref().and_then(|s| {
@@ -428,6 +432,7 @@ impl VcApp {
             tray,
             in_tray: false,
             quitting: false,
+            start_in_tray,
         };
         // Load the last model; the app never starts streaming by itself.
         if let Some(id) = app.prefs.last_model.clone()
@@ -964,6 +969,16 @@ const MODEL_LOST: &str = "The model was unloaded; choose it again from the Model
 
 impl eframe::App for VcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.start_in_tray {
+            // eframe shows the window after its first frame, and the minimise command from
+            // `new` follows it. Hide on the next frame, so nothing appears on screen.
+            if ctx.cumulative_pass_nr() == 0 {
+                ctx.request_repaint();
+            } else {
+                self.start_in_tray = false;
+                self.hide_to_tray(ctx);
+            }
+        }
         if !self.audio_dead_shown && !self.audio.is_alive() {
             self.audio_dead_shown = true;
             self.banner = Some(AUDIO_DEAD.to_string());

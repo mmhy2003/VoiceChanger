@@ -177,7 +177,7 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
     }
 }
 
-/// Settings → General: the Start/Stop hotkey, Start minimised, updates, the logs folder and About.
+/// Settings → General: the Start/Stop hotkey, Start in the tray, updates, the logs folder and About.
 fn general(ui: &mut egui::Ui, app: &mut VcApp) {
     ui.separator();
     ui.heading("General");
@@ -226,7 +226,7 @@ fn general(ui: &mut egui::Ui, app: &mut VcApp) {
         ui.colored_label(ui.visuals().error_fg_color, error);
     }
 
-    ui.checkbox(&mut app.prefs.start_minimised, "Start minimised");
+    ui.checkbox(&mut app.prefs.start_minimised, "Start in the tray");
     update::ui::settings_rows(ui, app);
     ui.horizontal(|ui| {
         if ui.button("Open logs folder").clicked() {

@@ -23,6 +23,7 @@ use crate::engine::{EngineProcessor, ErrorSlot};
 use crate::files;
 use crate::hotkey::{Combo, Hotkeys};
 use crate::import::{DropAction, DropRoute, Importer, Notice, classify_drop, route_drop};
+use crate::instance::Primary;
 use crate::model::{self, ModelSlot, provider_label};
 use crate::paths::AppDirs;
 use crate::status_bar::{self, StatusSnapshot};
@@ -304,13 +305,17 @@ pub struct VcApp {
     pub(crate) updater: Updater,
     /// When the window opened; the first automatic check waits a moment after it.
     started: Instant,
+    /// The single-instance guard; it hears a second launch.
+    instance: Option<Primary>,
 }
 
-/// What `main` hands the app: its folders, the loaded settings and any notes from loading them.
+/// What `main` hands the app: its folders, the loaded settings, any notes from loading them and
+/// the single-instance guard (`None` when the check failed).
 pub struct Startup {
     pub dirs: AppDirs,
     pub config: Config,
     pub notes: Vec<String>,
+    pub instance: Option<Primary>,
 }
 
 impl VcApp {
@@ -344,6 +349,13 @@ impl VcApp {
         let hotkey_note = hotkey_error.as_ref().map(|e| format!("Hotkey: {e}"));
         let notes: Vec<&str> = notes.into_iter().chain(hotkey_note.as_deref()).collect();
         let banner = (!notes.is_empty()).then(|| notes.join(" "));
+        let mut instance = startup.instance;
+        if let Some(primary) = &mut instance {
+            let ctx = cc.egui_ctx.clone();
+            if let Err(e) = primary.listen(move || ctx.request_repaint()) {
+                tracing::warn!("cannot listen for a second launch: {e}");
+            }
+        }
         let ctx = cc.egui_ctx.clone();
         let updater = Updater::spawn(
             WorkerConfig {
@@ -390,6 +402,7 @@ impl VcApp {
             updates: UpdateState::default(),
             updater,
             started: Instant::now(),
+            instance,
         };
         // Load the last model; the app never starts streaming by itself.
         if let Some(id) = app.prefs.last_model.clone()
@@ -796,6 +809,12 @@ impl VcApp {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
+
+    /// Brings the window to the front.
+    fn show_window(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
 }
 
 /// Banner and Start hint when the audio-control thread has died.
@@ -817,6 +836,9 @@ impl eframe::App for VcApp {
         self.poll_import();
         self.poll_convert();
         self.poll_updates(ctx);
+        if self.instance.as_ref().is_some_and(Primary::take_show) {
+            self.show_window(ctx);
+        }
         self.shared
             .set_monitor_gain(db_to_gain(self.state.monitor_db));
         if self.hotkeys.take_pressed() {

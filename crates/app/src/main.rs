@@ -8,6 +8,7 @@ mod engine;
 mod files;
 mod hotkey;
 mod import;
+mod instance;
 mod model;
 mod paths;
 mod self_test;
@@ -46,6 +47,17 @@ fn main() -> eframe::Result {
         drop(_guard);
         std::process::exit(code);
     }
+    let instance = match instance::acquire(instance::APP_NAME) {
+        Ok(instance::Instance::Primary(primary)) => Some(primary),
+        Ok(instance::Instance::Secondary) => {
+            tracing::info!("VoiceChanger is already running: asked it to show its window");
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::warn!("single-instance check failed: {e}");
+            None
+        }
+    };
     let dirs = paths::AppDirs::system();
     let (config, note) = config::load(&dirs.settings_file());
     let options = eframe::NativeOptions {
@@ -60,6 +72,7 @@ fn main() -> eframe::Result {
         dirs,
         config,
         notes: note.into_iter().collect(),
+        instance,
     };
     eframe::run_native(
         &app::window_title(),

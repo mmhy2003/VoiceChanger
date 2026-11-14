@@ -6,8 +6,8 @@ use std::time::Duration;
 /// Converts mono input blocks on the worker thread. `Any` lets the owner downcast the processor
 /// it gets back from `AudioSession::stop`.
 pub trait Processor: Any + Send {
-    /// Sample rate of the samples `process` appends.
-    fn out_rate(&self) -> u32;
+    /// Sample rate of the samples `process` appends, for input at `in_rate`.
+    fn out_rate(&self, in_rate: u32) -> u32;
 
     /// Algorithmic delay of an output sample behind its input, not counting the wait for a whole
     /// block (that is in the output backlog once the block is pushed). Valid after `prepare`.
@@ -23,22 +23,14 @@ pub trait Processor: Any + Send {
     fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), String>;
 }
 
-/// Identity processor declaring `rate` (tests and bring-up).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Passthrough {
-    rate: u32,
-}
-
-impl Passthrough {
-    /// A passthrough whose output is declared to be at `rate`.
-    pub fn new(rate: u32) -> Self {
-        Passthrough { rate }
-    }
-}
+/// The original voice: copies the input unchanged, at the input rate. The app runs it when no
+/// voice model is chosen and in Bypass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Passthrough;
 
 impl Processor for Passthrough {
-    fn out_rate(&self) -> u32 {
-        self.rate
+    fn out_rate(&self, in_rate: u32) -> u32 {
+        in_rate
     }
 
     fn delay(&self) -> Duration {
@@ -56,9 +48,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn passthrough_appends_input() {
-        let mut p = Passthrough::new(44_100);
-        assert_eq!(p.out_rate(), 44_100);
+    fn passthrough_follows_the_input_rate() {
+        let mut p = Passthrough;
+        assert_eq!(p.out_rate(44_100), 44_100);
+        assert_eq!(p.out_rate(48_000), 48_000);
         assert_eq!(p.delay(), Duration::ZERO);
         assert_eq!(p.prepare(48_000), Ok(()));
         let mut out = vec![1.0];

@@ -34,7 +34,7 @@ impl<C: Convert> EngineProcessor<C> {
 }
 
 impl<C: Convert + Send + 'static> vc_audio::Processor for EngineProcessor<C> {
-    fn out_rate(&self) -> u32 {
+    fn out_rate(&self, _in_rate: u32) -> u32 {
         self.streamer.sample_rate()
     }
 
@@ -111,7 +111,7 @@ mod tests {
     fn processor_reports_rate_and_delay() {
         let (mut p, error) = processor(usize::MAX);
         p.prepare(16_000).unwrap();
-        assert_eq!(p.out_rate(), 40_000);
+        assert_eq!(p.out_rate(16_000), 40_000);
         assert_eq!(p.delay(), Duration::from_millis(60));
         let mut out = Vec::new();
         p.process(&block(), &mut out).unwrap();

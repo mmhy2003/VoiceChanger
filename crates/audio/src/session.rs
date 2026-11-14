@@ -261,7 +261,7 @@ impl AudioSession {
             out_conses.push(cons);
         }
 
-        let proc_rate = processor.out_rate();
+        let proc_rate = processor.out_rate(input.rate);
         let state = State::new(
             &WorkerConfig {
                 in_rate: input.rate,
@@ -406,7 +406,7 @@ mod tests {
             },
             ..Selection::default()
         };
-        let processor = Box::new(Passthrough::new(48_000));
+        let processor = Box::new(Passthrough);
         match AudioSession::start(&sel, Arc::new(Shared::new()), processor) {
             Err((StartError::DeviceNotFound(name), Some(_))) => {
                 assert_eq!(name, "No Such Device 7f3a")

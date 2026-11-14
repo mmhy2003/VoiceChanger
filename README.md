@@ -6,7 +6,7 @@ Real-time AI voice changer for Windows, written in Rust. Runs RVC voice models l
 
 ## Status
 
-1.0.0 is the first release. Download the installer from [Releases](https://github.com/mmhy2003/VoiceChanger/releases).
+1.1.0 is the latest release. Download the installer from [Releases](https://github.com/mmhy2003/VoiceChanger/releases). From 1.1.0 on, VoiceChanger updates itself.
 
 ## Requirements
 

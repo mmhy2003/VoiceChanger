@@ -4425,6 +4425,7 @@ dependencies = [
  "egui_extras",
  "global-hotkey",
  "image",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
@@ -4440,6 +4441,7 @@ dependencies = [
  "vc-engine",
  "vc-models",
  "windows-sys 0.61.2",
+ "winit",
  "winresource",
 ]
 

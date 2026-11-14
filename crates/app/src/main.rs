@@ -19,6 +19,7 @@ mod tabs;
 mod testutil;
 mod update;
 mod widgets;
+mod window;
 
 use std::path::Path;
 

@@ -8,6 +8,8 @@ use eframe::egui::{self, Key};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
+use crate::window::Waker;
+
 /// A key with at least one of Ctrl, Alt or Shift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Combo {
@@ -197,15 +199,15 @@ pub struct Hotkeys {
 }
 
 impl Hotkeys {
-    /// Creates the manager on the UI thread. A press sets `pressed` and repaints, so it is seen while minimised.
-    pub fn new(ctx: &egui::Context) -> Self {
+    /// Creates the manager on the UI thread. A press sets `pressed` and wakes the app, so it is
+    /// seen while minimised or hidden in the tray.
+    pub fn new(waker: Waker) -> Self {
         let pressed = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&pressed);
-        let ctx = ctx.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
             if e.state == HotKeyState::Pressed {
                 flag.store(true, Ordering::Relaxed);
-                ctx.request_repaint();
+                waker.wake();
             }
         }));
         let manager = GlobalHotKeyManager::new()

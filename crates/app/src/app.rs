@@ -39,6 +39,7 @@ use crate::update::version::Version;
 use crate::update::worker::{Command, Updater, WorkerConfig};
 use crate::update::{self, install};
 use crate::widgets::MeterState;
+use crate::window::{self, Waker};
 
 /// Window title, including the app version.
 pub fn window_title() -> String {
@@ -338,7 +339,8 @@ impl VcApp {
             .chain(&state.notes)
             .map(String::as_str)
             .collect();
-        let mut hotkeys = Hotkeys::new(&cc.egui_ctx);
+        let waker = Waker::new(&cc.egui_ctx, window::hwnd_of(cc));
+        let mut hotkeys = Hotkeys::new(waker.clone());
         // A saved hotkey that fails is kept, so it is tried again next launch.
         let hotkey_error = startup.config.hotkey.as_deref().and_then(|s| {
             Combo::parse(s)
@@ -351,12 +353,11 @@ impl VcApp {
         let banner = (!notes.is_empty()).then(|| notes.join(" "));
         let mut instance = startup.instance;
         if let Some(primary) = &mut instance {
-            let ctx = cc.egui_ctx.clone();
-            if let Err(e) = primary.listen(move || ctx.request_repaint()) {
+            let waker = waker.clone();
+            if let Err(e) = primary.listen(move || waker.wake()) {
                 tracing::warn!("cannot listen for a second launch: {e}");
             }
         }
-        let ctx = cc.egui_ctx.clone();
         let updater = Updater::spawn(
             WorkerConfig {
                 latest_url: LATEST_URL.into(),
@@ -364,7 +365,7 @@ impl VcApp {
                 current: Version::current(),
                 running_exe: std::env::current_exe().ok(),
             },
-            Box::new(move || ctx.request_repaint()),
+            Box::new(move || waker.wake()),
         );
         let mut app = Self {
             tab: Tab::default(),

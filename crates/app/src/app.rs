@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use vc_audio::{
-    AudioControl, DeviceList, DeviceRef, Endpoint, Processor, Selection, SessionInfo, Shared,
-    StreamStatus, db_to_gain, start_blocker,
+    AudioControl, DeviceList, DeviceRef, Endpoint, Passthrough, Processor, Selection, SessionInfo,
+    Shared, StreamStatus, db_to_gain, start_blocker,
 };
 use vc_engine::{Controls, Pipeline, Provider, StreamSettings, StreamStats, Streamer};
 
@@ -26,6 +26,7 @@ use crate::import::{DropAction, DropRoute, Importer, Notice, classify_drop, rout
 use crate::instance::Primary;
 use crate::model::{self, ModelSlot, provider_label};
 use crate::paths::AppDirs;
+use crate::source::{VoiceSource, restart_source, start_source, wanted_source};
 use crate::status_bar::{self, StatusSnapshot};
 use crate::switch::{PendingSwitch, SwitchPlan, pitch_for, plan_switch};
 use crate::tabs;
@@ -253,6 +254,10 @@ pub struct VcApp {
     pub(crate) audio: AudioControl,
     /// The running session's sample rates; `Some` while running.
     pub(crate) session_info: Option<SessionInfo>,
+    /// What the running session sends; `Some` while running.
+    pub(crate) session_source: Option<VoiceSource>,
+    /// Bypass: send the original voice although a model is chosen. Never saved; off at launch.
+    pub(crate) bypass: bool,
     /// Created once and reused by every session.
     shared: Arc<Shared>,
     /// Why audio stopped or could not start, shown on the Voice tab.
@@ -396,6 +401,8 @@ impl VcApp {
             state,
             audio,
             session_info: None,
+            session_source: None,
+            bypass: false,
             shared,
             banner,
             input_meter: MeterState::default(),
@@ -652,25 +659,56 @@ impl VcApp {
         self.session_info.is_some()
     }
 
-    /// Streams the loaded model with the current selection; on failure, the banner says why.
+    /// The chosen library model. `None` is the original voice, also when the saved model is gone.
+    pub(crate) fn chosen_model(&self) -> Option<&ModelEntry> {
+        let id = self.prefs.last_model.as_deref()?;
+        self.library.get(id)
+    }
+
+    pub(crate) fn model_chosen(&self) -> bool {
+        self.chosen_model().is_some()
+    }
+
+    /// What the user wants sent to the cable.
+    fn wanted(&self) -> VoiceSource {
+        wanted_source(self.model_chosen(), self.bypass)
+    }
+
+    /// Streams the wanted voice with the current selection. Does nothing when a model is wanted
+    /// but not ready: the original voice is only sent when the user chose it.
     pub(crate) fn start(&mut self) {
+        if let Some(source) = start_source(self.wanted(), self.model.is_ready()) {
+            self.start_with(source);
+        }
+    }
+
+    /// Starts a session that sends `source`; on failure, the banner says why.
+    fn start_with(&mut self, source: VoiceSource) {
         self.banner = None;
-        let Some(pipeline) = self.model.take() else {
-            return;
+        let processor: Box<dyn Processor> = match source {
+            VoiceSource::Original => Box::new(Passthrough),
+            VoiceSource::Model => {
+                let Some(pipeline) = self.model.take() else {
+                    return;
+                };
+                let streamer = Streamer::new(
+                    pipeline,
+                    self.state.perf.stream,
+                    self.controls.clone(),
+                    self.stats.clone(),
+                );
+                Box::new(EngineProcessor::new(streamer, self.processor_error.clone()))
+            }
         };
         *self
             .processor_error
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
-        let streamer = Streamer::new(
-            pipeline,
-            self.state.perf.stream,
-            self.controls.clone(),
-            self.stats.clone(),
-        );
-        let processor = EngineProcessor::new(streamer, self.processor_error.clone());
-        match self.audio.start(&self.state.selection, Box::new(processor)) {
-            Ok(info) => self.session_info = Some(info),
+        match self.audio.start(&self.state.selection, processor) {
+            Ok(info) => {
+                self.session_info = Some(info);
+                self.session_source = Some(source);
+            }
             Err((e, back)) => {
                 self.recover(back);
                 let text = format!("Could not start audio: {e}");
@@ -696,6 +734,7 @@ impl VcApp {
     /// Stops audio, takes the model back and clears the meters.
     pub(crate) fn stop(&mut self) {
         if self.session_info.take().is_some() {
+            self.session_source = None;
             let back = self.audio.stop();
             self.recover(back);
         }
@@ -846,11 +885,11 @@ impl VcApp {
     }
 
     /// Why Start cannot be pressed now, as on the Voice tab; `None` when it can.
-    fn start_blocked(&self) -> Option<&'static str> {
+    pub(crate) fn start_blocked(&self) -> Option<&'static str> {
         start_hint(
             self.audio.is_alive(),
             start_blocker(&self.state.devices, &self.state.selection),
-            self.model.is_ready(),
+            start_source(self.wanted(), self.model.is_ready()).is_some(),
         )
     }
 
@@ -929,11 +968,12 @@ impl VcApp {
 
     /// Shows the app's state on the tray icon.
     fn sync_tray(&mut self) {
-        let state = tray_state(
-            self.is_running(),
-            self.start_blocked().is_some(),
-            self.model.info().map(|info| info.name.as_str()),
-        );
+        let sent = match self.session_source {
+            Some(VoiceSource::Original) => Some("Original voice"),
+            Some(VoiceSource::Model) => self.model.info().map(|info| info.name.as_str()),
+            None => None,
+        };
+        let state = tray_state(self.is_running(), self.start_blocked().is_some(), sent);
         if let Some(tray) = &mut self.tray {
             tray.sync(state);
         }
@@ -1021,20 +1061,26 @@ impl eframe::App for VcApp {
         if !self.in_tray {
             self.draw(ctx);
         }
-        // Block, context and crossfade restart the stream on release; the model is kept.
-        if self.is_running() && (self.state.selection != before || self.restart_requested) {
-            self.stop();
-            self.start();
+        // A switch of the source (the model became ready; later Bypass and Original voice), or a
+        // device, block, context or crossfade change, restarts the stream. The model is kept.
+        if let Some(running) = self.session_source {
+            let forced = self.state.selection != before || self.restart_requested;
+            if let Some(source) =
+                restart_source(running, self.wanted(), self.model.is_ready(), forced)
+            {
+                self.stop();
+                self.start_with(source);
+            }
         }
         self.restart_requested = false;
-        // A new provider or GPU needs a fresh session, so the model is reloaded.
-        if self.state.perf.provider() != provider_before
-            && !self.is_running()
-            && let Some(id) = self.prefs.last_model.clone()
-        {
+        // A new provider or GPU needs a fresh session. The slot is always emptied, so a pipeline on
+        // the old provider is never reused; it is reloaded only for a chosen model.
+        if self.state.perf.provider() != provider_before && !self.is_running() {
             self.pending = None;
             self.model = ModelSlot::Empty;
-            self.select_model(&id);
+            if let Some(id) = self.chosen_model().map(|entry| entry.id.clone()) {
+                self.select_model(&id);
+            }
         }
         self.handle_close(ctx);
 

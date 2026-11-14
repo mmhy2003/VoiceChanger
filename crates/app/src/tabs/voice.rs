@@ -1,7 +1,7 @@
 //! Voice tab: the Model list, Start/Stop, live voice controls, level meters, status and the banner.
 
 use eframe::egui;
-use vc_audio::{SessionInfo, start_blocker};
+use vc_audio::SessionInfo;
 
 use crate::app::{AUDIO_DEAD, Tab, VcApp};
 use crate::widgets;
@@ -27,11 +27,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
             app.stop();
         }
     } else {
-        let hint = start_hint(
-            app.audio.is_alive(),
-            start_blocker(&app.state.devices, &app.state.selection),
-            app.model.is_ready(),
-        );
+        let hint = app.start_blocked();
         if ui
             .add_enabled(hint.is_none(), egui::Button::new("▶ Start"))
             .clicked()
@@ -120,18 +116,18 @@ fn model_picker(ui: &mut egui::Ui, app: &mut VcApp) {
 }
 
 /// Why Start is disabled, or `None` when it can be pressed: a dead audio thread first,
-/// then the device `blocker`, then a missing model.
+/// then the device `blocker`, then a chosen model that is not loaded.
 pub fn start_hint(
     audio_alive: bool,
     blocker: Option<&'static str>,
-    model_ready: bool,
+    voice_ready: bool,
 ) -> Option<&'static str> {
     if !audio_alive {
         Some(AUDIO_DEAD)
     } else if blocker.is_some() {
         blocker
-    } else if !model_ready {
-        Some("Pick a model first")
+    } else if !voice_ready {
+        Some("The model is not loaded")
     } else {
         None
     }
@@ -167,8 +163,25 @@ mod tests {
         assert_eq!(start_hint(false, None, true), Some(AUDIO_DEAD));
         assert_eq!(start_hint(true, Some(BLOCKER), false), Some(BLOCKER));
         assert_eq!(start_hint(true, Some(BLOCKER), true), Some(BLOCKER));
-        assert_eq!(start_hint(true, None, false), Some("Pick a model first"));
+        assert_eq!(
+            start_hint(true, None, false),
+            Some("The model is not loaded")
+        );
         assert_eq!(start_hint(true, None, true), None);
+    }
+
+    #[test]
+    fn start_hint_original_voice_needs_no_model() {
+        use crate::source::{start_source, wanted_source};
+        // (model_chosen, bypass), with a model that is not loaded.
+        let ready = |chosen, bypass| start_source(wanted_source(chosen, bypass), false).is_some();
+        assert_eq!(start_hint(true, None, ready(false, false)), None);
+        assert_eq!(
+            start_hint(true, None, ready(true, false)),
+            Some("The model is not loaded")
+        );
+        // Bypass asks for the original voice, which needs no model.
+        assert_eq!(start_hint(true, None, ready(true, true)), None);
     }
 
     #[test]

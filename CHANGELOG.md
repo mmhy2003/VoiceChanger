@@ -12,6 +12,7 @@ and the project uses `X.Y.Z` versions as described in [AGENTS.md](AGENTS.md).
 
 ### Changed
 - The installer accepts `/RELAUNCH` to start VoiceChanger after a silent install.
+- Settings → Audio devices: the rows are now labelled Microphone, Virtual mic and Monitor.
 
 ## [1.0.0] - 2026-11-13
 

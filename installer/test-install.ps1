@@ -7,7 +7,9 @@ Checks first that the VB-CABLE pack pinned in setup.iss still downloads with the
 and contains the pinned setup exe. It serves fake VB-CABLE packs from a local HTTP server on
 127.0.0.1 (setup's test-only /CableUrl= and /CableSha256= switches). Then: per-user install without admin, files and file version, `voicechanger.exe --self-test`,
 the VB-CABLE check (against fake endpoints under HKCU), a silent install without /INSTALLCABLE
-downloads nothing, /CableUrl= outside 127.0.0.1 is ignored, upgrade keeps user data, the in-app
+downloads nothing, /CableUrl= outside 127.0.0.1 is ignored, /INSTALLCABLE downloads the pack,
+refuses a wrong SHA-256, runs the setup exe with -i -h, asks for a restart when no cable shows up
+and downloads nothing when a cable is present, upgrade keeps user data, the in-app
 updater's /SILENT /RELAUNCH upgrade starts voicechanger.exe again while a silent install without
 /RELAUNCH does not, a silent uninstall keeps user data and /PURGEDATA removes it.
 It deletes %APPDATA%\VoiceChanger and %LOCALAPPDATA%\VoiceChanger, so it refuses to run when
@@ -248,6 +250,34 @@ try {
         '/CableSha256=0000000000000000000000000000000000000000000000000000000000000000', "/CableRegistryKey=$fakeCables")
     Assert ($log -match [regex]::Escape('VoiceChanger: ignoring /CableUrl=https://example.com/VBCABLE.zip')) '/CableUrl= outside 127.0.0.1 is ignored'
     Assert ($log -match [regex]::Escape('VoiceChanger: VB-CABLE pack ' + (Get-PinnedValue 'CableUrl'))) 'setup keeps the pinned pack URL'
+
+    # /INSTALLCABLE with a local fake pack: setup downloads, checks, unzips and runs the stub installer.
+    $okSha = New-StubPack 'ok' -CreatesCable
+    $noneSha = New-StubPack 'none'
+    $cable = @('/INSTALLCABLE', "/CableRegistryKey=$fakeCables")
+    # Case 3: wrong hash
+    Reset-CableTest
+    $log = Install $Setup 'cable-bad-hash' ($cable + "/CableUrl=$($server.Url)/ok.zip", '/CableSha256=0000000000000000000000000000000000000000000000000000000000000000')
+    Assert ($log -match 'VoiceChanger: VB-CABLE not installed: ') 'a changed pack is not installed'
+    Assert (-not (Test-Path $stubArgs)) 'a pack with the wrong hash is never run'
+    Assert (Test-Path (Join-Path $appDir 'voicechanger.exe')) 'VoiceChanger installs although VB-CABLE failed'
+    # Case 4: VB-Audio's installer ran, but no endpoint showed up
+    Reset-CableTest
+    $log = Install $Setup 'cable-restart' ($cable + "/CableUrl=$($server.Url)/none.zip", "/CableSha256=$noneSha")
+    Assert ($log -match 'VoiceChanger: VB-CABLE restart needed') 'no cable after VB-Audio''s installer: setup asks for a restart'
+    # Case 2: installs
+    Reset-CableTest
+    $log = Install $Setup 'cable-install' ($cable + "/CableUrl=$($server.Url)/ok.zip", "/CableSha256=$okSha")
+    Assert ((Get-Requests) -contains '/ok.zip') 'setup downloads the pack'
+    Assert ((Test-Path $stubArgs) -and (Get-Content -Raw $stubArgs).Trim() -eq '-i -h') 'VB-Audio''s installer runs with -i -h'
+    Assert ($log -match 'VoiceChanger: VB-CABLE installed') 'setup installs VB-CABLE'
+    Assert ($log -match 'VoiceChanger: virtual cable found') 'after the install the finish page no longer offers the download'
+    # Case 5: cable present (the endpoint the stub created in case 2)
+    Remove-Item -Force $requests -ErrorAction SilentlyContinue
+    $log = Install $Setup 'cable-present' ($cable + "/CableUrl=$($server.Url)/ok.zip", "/CableSha256=$okSha")
+    Assert ((Get-Requests).Count -eq 0) 'with a cable present setup downloads nothing'
+
+    Reset-CableTest
     $endpoint = "HKCU:\$fakeCables\{00000000-0000-0000-0000-000000000001}"
     New-Item -Force "$endpoint\Properties" | Out-Null
     New-ItemProperty -Force $endpoint -Name DeviceState -PropertyType DWord -Value 1 | Out-Null

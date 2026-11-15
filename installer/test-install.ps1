@@ -296,9 +296,12 @@ try {
     Assert (-not (Test-Path $local)) "uninstall /PURGEDATA removes $local"
     Write-Host "installer test passed: $Setup"
 } catch {
-    # CI keeps no files: show the end of the newest setup log.
+    # CI keeps no files: show the VoiceChanger, download and error lines of the newest setup log.
     Get-ChildItem -File $logs -Filter *.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime |
-        Select-Object -Last 1 | ForEach-Object { Write-Host "--- end of $($_.Name)"; Get-Content $_.FullName -Tail 60 | Write-Host }
+        Select-Object -Last 1 | ForEach-Object {
+            Write-Host "--- $($_.Name)"
+            Select-String -Path $_.FullName -Pattern 'VoiceChanger:|download|error|exception|Exec|runas' | ForEach-Object { Write-Host $_.Line }
+        }
     throw
 } finally {
     if (Get-Variable server -ErrorAction SilentlyContinue) { $server.Listener.Stop(); $server.Job | Remove-Job -Force }

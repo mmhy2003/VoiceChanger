@@ -3,13 +3,16 @@
 
 use eframe::egui;
 use vc_audio::SessionInfo;
+use vc_engine::stream::settings::GATE_DB_RANGE;
+use vc_models::PITCH_RANGE;
 
-use crate::app::{AUDIO_DEAD, Tab, VcApp};
+use crate::app::{AUDIO_DEAD, GAIN_DB_RANGE, Tab, VcApp};
+use crate::help::{self, Id, Topic};
 use crate::source::{ORIGINAL_VOICE, VoiceSource};
 use crate::widgets;
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
-    ui.heading("Voice");
+    help::ui::heading(ui, &mut app.help, "Voice", Topic::Voice);
 
     if let Some(banner) = &app.banner {
         let mut dismiss = false;
@@ -32,56 +35,79 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
     };
     ui.horizontal(|ui| {
         if app.is_running() {
-            if ui.button("■ Stop").clicked() {
+            if help::ui::tip(ui.button("■ Stop"), Id::StartStop).clicked() {
                 app.stop();
             }
-        } else if ui
-            .add_enabled(hint.is_none(), egui::Button::new("▶ Start"))
-            .clicked()
+        } else if help::ui::tip(
+            ui.add_enabled(hint.is_none(), egui::Button::new("▶ Start")),
+            Id::StartStop,
+        )
+        .clicked()
         {
             app.start();
         }
-        ui.add_enabled(
-            model_chosen,
-            egui::Checkbox::new(&mut app.bypass, "Bypass: send my original voice"),
+        help::ui::tip(
+            ui.add_enabled(
+                model_chosen,
+                egui::Checkbox::new(&mut app.bypass, "Bypass: send my original voice"),
+            ),
+            Id::Bypass,
         );
     });
     if let Some(hint) = hint {
         ui.label(hint);
     }
 
-    let pitch = ui.add_enabled(
-        model_chosen,
-        egui::Slider::new(&mut app.state.voice.pitch, -24..=24)
-            .text("Pitch")
-            .suffix(" st"),
+    let pitch = help::ui::tip(
+        ui.add_enabled(
+            model_chosen,
+            egui::Slider::new(&mut app.state.voice.pitch, PITCH_RANGE)
+                .text("Pitch")
+                .suffix(" st"),
+        ),
+        Id::Pitch,
     );
     if pitch.changed() {
         app.pitch_changed();
     }
     let voice = &mut app.state.voice;
-    ui.add(
-        egui::Slider::new(&mut voice.input_db, -20.0..=20.0)
-            .text("Input gain")
-            .suffix(" dB"),
+    help::ui::tip(
+        ui.add(
+            egui::Slider::new(&mut voice.input_db, GAIN_DB_RANGE)
+                .text("Input gain")
+                .suffix(" dB"),
+        ),
+        Id::InputGain,
     );
-    ui.add(
-        egui::Slider::new(&mut voice.output_db, -20.0..=20.0)
-            .text("Output gain")
-            .suffix(" dB"),
+    help::ui::tip(
+        ui.add(
+            egui::Slider::new(&mut voice.output_db, GAIN_DB_RANGE)
+                .text("Output gain")
+                .suffix(" dB"),
+        ),
+        Id::OutputGain,
     );
-    ui.add_enabled(
-        model_chosen,
-        egui::Slider::new(&mut voice.gate_db, -90.0..=-20.0)
-            .text("Noise gate")
-            .suffix(" dB"),
+    help::ui::tip(
+        ui.add_enabled(
+            model_chosen,
+            egui::Slider::new(&mut voice.gate_db, GATE_DB_RANGE)
+                .text("Noise gate")
+                .suffix(" dB"),
+        ),
+        Id::NoiseGate,
     );
     if !model_chosen {
         ui.label(CONVERTED_ONLY);
     }
 
-    widgets::meter(ui, "Input", app.input_meter.shown);
-    widgets::meter(ui, "Output", app.output_meter.shown);
+    help::ui::tip(
+        widgets::meter(ui, "Input", app.input_meter.shown),
+        Id::Meters,
+    );
+    help::ui::tip(
+        widgets::meter(ui, "Output", app.output_meter.shown),
+        Id::Meters,
+    );
     ui.label(status_line(
         app.session_info,
         app.session_source == Some(VoiceSource::Original),
@@ -123,7 +149,7 @@ fn model_picker(ui: &mut egui::Ui, app: &mut VcApp) {
         .collect();
     let mut picked = None;
     ui.horizontal(|ui| {
-        egui::ComboBox::from_label("Model")
+        let combo = egui::ComboBox::from_label("Model")
             .selected_text(selected)
             .show_ui(ui, |ui| {
                 if ui
@@ -138,7 +164,9 @@ fn model_picker(ui: &mut egui::Ui, app: &mut VcApp) {
                         picked = Some(Pick::Model(id.clone()));
                     }
                 }
-            });
+            })
+            .response;
+        help::ui::tip(combo, Id::Model);
         ui.label(model_state(active.is_some(), app.model.label()));
     });
     if app.library.entries().is_empty() {

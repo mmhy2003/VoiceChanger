@@ -1,6 +1,7 @@
 //! Top-level app state and the tab bar.
 
 use std::any::Any;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -21,6 +22,7 @@ use vc_models::{Library, ModelEntry};
 use crate::convert::Converter;
 use crate::engine::{EngineProcessor, ErrorSlot};
 use crate::files;
+use crate::help::{self, HelpState};
 use crate::hotkey::{Combo, Hotkeys};
 use crate::import::{DropAction, DropRoute, Importer, Notice, classify_drop, route_drop};
 use crate::instance::Primary;
@@ -153,6 +155,13 @@ impl PerfSettings {
         }
     }
 }
+
+/// Input gain and Output gain, in dB.
+pub const GAIN_DB_RANGE: RangeInclusive<f32> = -20.0..=20.0;
+/// Monitor volume, in dB.
+pub const MONITOR_DB_RANGE: RangeInclusive<f32> = -40.0..=0.0;
+/// GPU index for DirectML and CUDA.
+pub const GPU_RANGE: RangeInclusive<i32> = 0..=7;
 
 /// Voice tab controls, applied live to the running stream.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -306,6 +315,8 @@ pub struct VcApp {
     /// Why the hotkey could not be parsed, recorded or registered.
     pub(crate) hotkey_error: Option<String>,
     pub(crate) show_about: bool,
+    /// The Help window: open or not and on which topic.
+    pub(crate) help: HelpState,
     /// The update check, offer, download and install.
     pub(crate) updates: UpdateState,
     /// Checks and downloads updates in the background.
@@ -327,16 +338,18 @@ pub struct VcApp {
 }
 
 /// What `main` hands the app: its folders, the loaded settings, any notes from loading them and
-/// the single-instance guard (`None` when the check failed).
+/// the single-instance guard (`None` when the check failed), and whether this is the first run.
 pub struct Startup {
     pub dirs: AppDirs,
     pub config: Config,
     pub notes: Vec<String>,
     pub instance: Option<Primary>,
+    pub first_run: bool,
 }
 
 impl VcApp {
     pub fn new(cc: &eframe::CreationContext<'_>, startup: Startup) -> Self {
+        let first_run = startup.first_run;
         // egui 0.32's ViewportBuilder cannot open minimised; the command runs after the first frame.
         // With a tray icon the window is hidden on the next frame.
         if startup.config.start_minimised {
@@ -431,6 +444,7 @@ impl VcApp {
             recording_hotkey: false,
             hotkey_error,
             show_about: false,
+            help: HelpState::at_startup(first_run),
             updates: UpdateState::default(),
             updater,
             started: Instant::now(),
@@ -446,6 +460,11 @@ impl VcApp {
             && app.library.get(&id).is_some()
         {
             app.select_model(&id);
+        }
+        // A fresh install opens Help once; saving now makes the next start a normal one.
+        if first_run {
+            let cfg = app.state.to_config(&app.prefs);
+            app.write_config(cfg);
         }
         app
     }
@@ -1028,14 +1047,18 @@ impl VcApp {
         }
     }
 
-    /// The tab bar, the status bar, the open tab and the update window.
+    /// The tab bar, the status bar, the open tab, the update window and the Help window.
     fn draw(&mut self, ctx: &egui::Context) {
+        if help::ui::f1_pressed(ctx, self.recording_hotkey) {
+            self.help.toggle(self.tab);
+        }
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             update::ui::banner(ui, self);
             ui.horizontal(|ui| {
                 for t in Tab::ALL {
                     ui.selectable_value(&mut self.tab, t, t.label());
                 }
+                help::ui::tab_bar_button(ui, &mut self.help, self.tab);
             });
         });
         if let Some(snapshot) = self.status_snapshot() {
@@ -1048,6 +1071,7 @@ impl VcApp {
             Tab::Settings => tabs::settings::show(ui, self),
         });
         update::ui::window(ctx, self);
+        help::ui::window(ctx, &mut self.help);
     }
 }
 
@@ -1170,6 +1194,13 @@ mod tests {
     use super::*;
     use crate::config::UpdatesConfig;
     use vc_audio::{DEFAULT_MONITOR_DB, DeviceInfo};
+
+    #[test]
+    fn slider_ranges() {
+        assert_eq!(GAIN_DB_RANGE, -20.0..=20.0);
+        assert_eq!(MONITOR_DB_RANGE, -40.0..=0.0);
+        assert_eq!(GPU_RANGE, 0..=7);
+    }
 
     #[test]
     fn window_title_has_version() {

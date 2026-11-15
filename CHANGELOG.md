@@ -7,6 +7,16 @@ and the project uses `X.Y.Z` versions as described in [AGENTS.md](AGENTS.md).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-15
+
+### Added
+- In-app help: every control explains itself when you hover it, with its range and default. The Help window (**? Help** in the tab bar, **F1**, or the **?** next to a heading) has Getting started, a page for each part of the app and Troubleshooting. It opens by itself the first time VoiceChanger starts on a fresh install.
+
+### Fixed
+- Models tab: the reorder buttons show up and down triangles again instead of empty squares.
+- The update banner's close button shows ✖ instead of an empty square.
+- The resampler's error message writes `->` instead of an arrow that showed as an empty square.
+
 ## [1.2.0] - 2026-11-15
 
 ### Added

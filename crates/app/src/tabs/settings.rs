@@ -2,9 +2,11 @@
 
 use eframe::egui;
 use vc_audio::{feedback_warnings, is_virtual_cable, start_blocker};
+use vc_engine::stream::settings::{BLOCK_MS, CONTEXT_MS, CROSSFADE_MS};
 
-use crate::app::{ProviderChoice, VcApp};
+use crate::app::{GPU_RANGE, MONITOR_DB_RANGE, ProviderChoice, VcApp};
 use crate::files;
+use crate::help::{self, Id, Topic};
 use crate::hotkey::{RecordOutcome, record_key};
 use crate::paths::AppDirs;
 use crate::update;
@@ -13,7 +15,7 @@ use crate::widgets;
 const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
-    ui.heading("Audio devices");
+    help::ui::heading(ui, &mut app.help, "Audio devices", Topic::Devices);
 
     let input_level = app.is_running().then_some(app.input_meter.shown);
     let state = &mut app.state;
@@ -23,9 +25,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
-            ui.label("Microphone");
+            help::ui::tip(ui.label("Microphone"), Id::Microphone);
             ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("input")
+                let combo = egui::ComboBox::from_id_salt("input")
                     .selected_text(name_or_none(&sel.input.name))
                     .show_ui(ui, |ui| {
                         for d in &devices.inputs {
@@ -37,14 +39,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
                             }
                         }
                     });
+                help::ui::tip(combo.response, Id::Microphone);
                 if let Some(level) = input_level {
                     widgets::meter(ui, "Level", level);
                 }
             });
             ui.end_row();
 
-            ui.label("Virtual mic");
-            egui::ComboBox::from_id_salt("cable")
+            help::ui::tip(ui.label("Virtual mic"), Id::VirtualMic);
+            let combo = egui::ComboBox::from_id_salt("cable")
                 .selected_text(output_label(&sel.cable.name))
                 .show_ui(ui, |ui| {
                     for d in &devices.outputs {
@@ -57,13 +60,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
                         }
                     }
                 });
+            help::ui::tip(combo.response, Id::VirtualMic);
             ui.end_row();
 
-            ui.label("Monitor");
+            help::ui::tip(ui.label("Monitor"), Id::Monitor);
             ui.vertical(|ui| {
-                ui.checkbox(&mut sel.monitor_enabled, "Monitor (hear yourself)");
+                help::ui::tip(
+                    ui.checkbox(&mut sel.monitor_enabled, "Monitor (hear yourself)"),
+                    Id::Monitor,
+                );
                 ui.add_enabled_ui(sel.monitor_enabled, |ui| {
-                    egui::ComboBox::from_id_salt("monitor")
+                    let combo = egui::ComboBox::from_id_salt("monitor")
                         .selected_text(name_or_none(
                             sel.monitor.as_ref().map_or("", |m| m.name.as_str()),
                         ))
@@ -76,17 +83,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
                                 }
                             }
                         });
-                    ui.add(
-                        egui::Slider::new(&mut state.monitor_db, -40.0..=0.0)
-                            .suffix(" dB")
-                            .text("Volume"),
+                    help::ui::tip(combo.response, Id::Monitor);
+                    help::ui::tip(
+                        ui.add(
+                            egui::Slider::new(&mut state.monitor_db, MONITOR_DB_RANGE)
+                                .suffix(" dB")
+                                .text("Volume"),
+                        ),
+                        Id::MonitorVolume,
                     );
                 });
             });
             ui.end_row();
         });
 
-    if ui.button("Refresh").clicked() {
+    if help::ui::tip(ui.button("Refresh"), Id::Refresh).clicked() {
         app.refresh_devices();
     }
 
@@ -119,7 +130,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
 /// Settings → Performance: provider, GPU and the block, context and crossfade sliders.
 fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
     ui.separator();
-    ui.heading("Performance");
+    help::ui::heading(ui, &mut app.help, "Performance", Topic::Performance);
 
     let running = app.is_running();
     let loading = app.model.is_loading();
@@ -129,10 +140,10 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
-            ui.label("Provider");
+            help::ui::tip(ui.label("Provider"), Id::Provider);
             ui.add_enabled_ui(!running && !loading, |ui| {
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("provider")
+                    let combo = egui::ComboBox::from_id_salt("provider")
                         .selected_text(choice_label(perf.provider))
                         .show_ui(ui, |ui| {
                             for choice in [
@@ -147,22 +158,39 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
                                 );
                             }
                         });
+                    help::ui::tip(combo.response, Id::Provider);
                     if perf.provider != ProviderChoice::Cpu {
-                        ui.label("GPU");
-                        ui.add(egui::DragValue::new(&mut perf.gpu).range(0..=7));
+                        help::ui::tip(ui.label("GPU"), Id::Gpu);
+                        help::ui::tip(
+                            ui.add(egui::DragValue::new(&mut perf.gpu).range(GPU_RANGE)),
+                            Id::Gpu,
+                        );
                     }
                 });
             });
             ui.end_row();
 
             let stream = &mut perf.stream;
-            for (label, value, range) in [
-                ("Block", &mut stream.block_ms, 50..=1000),
-                ("Extra context", &mut stream.context_ms, 0..=2000),
-                ("Crossfade", &mut stream.crossfade_ms, 10..=200),
+            for (label, value, range, id) in [
+                ("Block", &mut stream.block_ms, BLOCK_MS, Id::Block),
+                (
+                    "Extra context",
+                    &mut stream.context_ms,
+                    CONTEXT_MS,
+                    Id::ExtraContext,
+                ),
+                (
+                    "Crossfade",
+                    &mut stream.crossfade_ms,
+                    CROSSFADE_MS,
+                    Id::Crossfade,
+                ),
             ] {
-                ui.label(label);
-                let resp = ui.add(egui::Slider::new(value, range).step_by(10.0).suffix(" ms"));
+                help::ui::tip(ui.label(label), id);
+                let resp = help::ui::tip(
+                    ui.add(egui::Slider::new(value, range).step_by(10.0).suffix(" ms")),
+                    id,
+                );
                 restart |=
                     needs_restart(running, resp.drag_stopped(), resp.changed(), resp.dragged());
                 ui.end_row();
@@ -182,21 +210,19 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
 /// Settings → General: the Start/Stop hotkey, Start in the tray, updates, the logs folder and About.
 fn general(ui: &mut egui::Ui, app: &mut VcApp) {
     ui.separator();
-    ui.heading("General");
+    help::ui::heading(ui, &mut app.help, "General", Topic::General);
 
     ui.horizontal(|ui| {
-        ui.label("Hotkey:");
+        help::ui::tip(ui.label("Hotkey:"), Id::Hotkey);
         let current = app.prefs.hotkey.as_deref().unwrap_or("Off");
         // A recording error is not about the saved hotkey, which stays active.
         if app.hotkey_error.is_some() && app.prefs.hotkey.is_some() && !app.recording_hotkey {
-            ui.label(format!("{current} (not active)"));
+            help::ui::tip(ui.label(format!("{current} (not active)")), Id::Hotkey);
         } else {
-            ui.label(current);
+            help::ui::tip(ui.label(current), Id::Hotkey);
         }
-        if ui
-            .add_enabled(!app.recording_hotkey, egui::Button::new("Set…"))
-            .clicked()
-        {
+        let set = ui.add_enabled(!app.recording_hotkey, egui::Button::new("Set…"));
+        if help::ui::tip(set, Id::Hotkey).clicked() {
             app.recording_hotkey = true;
         }
         if ui.button("Clear").clicked() {
@@ -228,13 +254,16 @@ fn general(ui: &mut egui::Ui, app: &mut VcApp) {
         ui.colored_label(ui.visuals().error_fg_color, error);
     }
 
-    ui.checkbox(&mut app.prefs.start_minimised, "Start in the tray");
+    help::ui::tip(
+        ui.checkbox(&mut app.prefs.start_minimised, "Start in the tray"),
+        Id::StartInTray,
+    );
     update::ui::settings_rows(ui, app);
     ui.horizontal(|ui| {
-        if ui.button("Open logs folder").clicked() {
+        if help::ui::tip(ui.button("Open logs folder"), Id::OpenLogs).clicked() {
             files::open_folder(&app.dirs.logs);
         }
-        if ui.button("About…").clicked() {
+        if help::ui::tip(ui.button("About…"), Id::About).clicked() {
             app.show_about = true;
         }
     });

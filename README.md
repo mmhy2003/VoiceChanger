@@ -6,7 +6,7 @@ Real-time AI voice changer for Windows, written in Rust. Runs RVC voice models l
 
 ## Status
 
-1.2.0 is the latest release. Download the installer from [Releases](https://github.com/mmhy2003/VoiceChanger/releases). From 1.1.0 on, VoiceChanger updates itself.
+1.3.0 is the latest release. Download the installer from [Releases](https://github.com/mmhy2003/VoiceChanger/releases). From 1.1.0 on, VoiceChanger updates itself.
 
 ## Requirements
 
@@ -54,6 +54,10 @@ The `--stream` form runs the real-time streamer over the file and prints the per
 - `--sr 32000|40000|48000` is needed when the model has no `sr` metadata.
 - Only RVC WebUI ONNX exports with F0 (fp32) are supported. fp16 exports and models without F0 are rejected.
 - `--provider dml` (the default) uses DirectML. `--provider cuda` needs a CUDA build of `onnxruntime.dll` in place of the DirectML one. If a provider fails, the engine falls back to the CPU with a warning.
+
+## Help
+
+Hover any control to see what it does, with its range and default. **? Help** in the tab bar, **F1**, or the **?** next to a heading opens the Help window: Getting started, a page for each part of the app and Troubleshooting. It opens by itself once, the first time VoiceChanger starts on a fresh install.
 
 ## Original voice and Bypass
 

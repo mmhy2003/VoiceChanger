@@ -7,6 +7,8 @@ and the project uses `X.Y.Z` versions as described in [AGENTS.md](AGENTS.md).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-15
+
 ### Added
 - Original voice and Bypass: the Voice tab's Model list now starts with **Original voice (no model)**, so Start works without a voice model and sends your microphone to the virtual cable unchanged. With a voice selected, **Bypass: send my original voice** (Voice tab and tray menu) flips a running voice to your original voice and back without unloading the model; the audio restarts with a short gap. The status line, the status bar and the tray tooltip say when the original voice is being sent.
 - Setup offers to install VB-CABLE: when no virtual cable is found, a **Virtual audio cable** page offers to download VB-CABLE from vb-audio.com and install it (Windows asks for approval). Setup offers a restart only if the cable does not show up afterwards. VB-CABLE is not bundled; silent installs and in-app updates never install it.

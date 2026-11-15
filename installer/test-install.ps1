@@ -123,9 +123,11 @@ function New-StubPack([string] $Name, [switch] $CreatesCable) {
 using System.IO;
 using Microsoft.Win32;
 class Stub {
+    // Not a constant: `if (false)` would make csc warn about unreachable code.
+    static readonly bool CreatesCable = $create;
     static int Main(string[] args) {
         File.WriteAllText(@"$stubArgs", string.Join(" ", args));
-        if ($create) {
+        if (CreatesCable) {
             using (var k = Registry.CurrentUser.CreateSubKey(@"$cableEndpoint"))
                 k.SetValue("DeviceState", 1, RegistryValueKind.DWord);
             using (var p = Registry.CurrentUser.CreateSubKey(@"$cableEndpoint\Properties"))
@@ -136,7 +138,8 @@ class Stub {
 }
 "@
     Set-Content -Encoding utf8 (Join-Path $work 'stub.cs') $source
-    & $csc /nologo /target:exe "/out:$exe" (Join-Path $work 'stub.cs')
+    # Out-Host: compiler messages must not end up in the hash this function returns.
+    & $csc /nologo /target:exe "/out:$exe" (Join-Path $work 'stub.cs') | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "csc failed with exit code $LASTEXITCODE" }
     $zip = Join-Path $packDir "$Name.zip"
     Compress-Archive -Force -Path (Join-Path $content '*') -DestinationPath $zip

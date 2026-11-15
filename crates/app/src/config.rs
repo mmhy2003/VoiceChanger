@@ -185,6 +185,11 @@ impl Prefs {
     }
 }
 
+/// True when no settings file exists yet: a fresh install. Read before `load`, which renames bad files.
+pub fn first_run(path: &Path) -> bool {
+    !path.exists()
+}
+
 /// Reads the settings. A missing file gives the defaults with no note. A file that is unreadable, corrupt or
 /// from a newer version gives the defaults and a note; corrupt and newer files are renamed to `settings.toml.bad`.
 pub fn load(path: &Path) -> (Config, Option<String>) {
@@ -355,6 +360,23 @@ mod tests {
         assert!(text.contains("[updates]"), "{text}");
         assert!(text.contains("last_check = 1763100000"), "{text}");
         assert_eq!(load(&path), (config, None));
+    }
+
+    #[test]
+    fn first_run_until_settings_exist() {
+        let dir = TempDir::new("config-first-run");
+        let path = dir.path().join("config").join("settings.toml");
+        assert!(first_run(&path));
+        Config::default().save(&path).unwrap();
+        assert!(!first_run(&path));
+    }
+
+    #[test]
+    fn corrupt_settings_are_not_a_first_run() {
+        let dir = TempDir::new("config-first-run-corrupt");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "this is = = not toml").unwrap();
+        assert!(!first_run(&path));
     }
 
     #[test]

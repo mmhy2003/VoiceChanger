@@ -338,16 +338,18 @@ pub struct VcApp {
 }
 
 /// What `main` hands the app: its folders, the loaded settings, any notes from loading them and
-/// the single-instance guard (`None` when the check failed).
+/// the single-instance guard (`None` when the check failed), and whether this is the first run.
 pub struct Startup {
     pub dirs: AppDirs,
     pub config: Config,
     pub notes: Vec<String>,
     pub instance: Option<Primary>,
+    pub first_run: bool,
 }
 
 impl VcApp {
     pub fn new(cc: &eframe::CreationContext<'_>, startup: Startup) -> Self {
+        let first_run = startup.first_run;
         // egui 0.32's ViewportBuilder cannot open minimised; the command runs after the first frame.
         // With a tray icon the window is hidden on the next frame.
         if startup.config.start_minimised {
@@ -442,7 +444,7 @@ impl VcApp {
             recording_hotkey: false,
             hotkey_error,
             show_about: false,
-            help: HelpState::at_startup(false),
+            help: HelpState::at_startup(first_run),
             updates: UpdateState::default(),
             updater,
             started: Instant::now(),
@@ -458,6 +460,11 @@ impl VcApp {
             && app.library.get(&id).is_some()
         {
             app.select_model(&id);
+        }
+        // A fresh install opens Help once; saving now makes the next start a normal one.
+        if first_run {
+            let cfg = app.state.to_config(&app.prefs);
+            app.write_config(cfg);
         }
         app
     }

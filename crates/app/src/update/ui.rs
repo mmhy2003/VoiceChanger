@@ -6,7 +6,7 @@ use super::state::Phase;
 use super::version::Version;
 use crate::app::VcApp;
 
-/// One line above the tabs while an update is offered, with View… and ✕.
+/// One line above the tabs while an update is offered, with View… and ✖.
 pub fn banner(ui: &mut egui::Ui, app: &mut VcApp) {
     let Some(text) = app.updates.banner_text() else {
         return;
@@ -16,7 +16,7 @@ pub fn banner(ui: &mut egui::Ui, app: &mut VcApp) {
         if ui.link("View…").clicked() {
             app.updates.window_open = true;
         }
-        if ui.small_button("✕").clicked() {
+        if ui.small_button("✖").clicked() {
             app.updates.banner_hidden = true;
         }
     });

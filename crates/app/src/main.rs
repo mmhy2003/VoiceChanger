@@ -6,6 +6,8 @@ mod config;
 mod convert;
 mod engine;
 mod files;
+#[cfg(test)]
+mod glyphs;
 mod hotkey;
 mod import;
 mod instance;

@@ -7,6 +7,11 @@ and the project uses `X.Y.Z` versions as described in [AGENTS.md](AGENTS.md).
 
 ## [Unreleased]
 
+### Fixed
+- Models tab: the reorder buttons show up and down triangles again instead of empty squares.
+- The update banner's close button shows ✖ instead of an empty square.
+- The resampler's error message writes `->` instead of an arrow that showed as an empty square.
+
 ## [1.2.0] - 2026-11-15
 
 ### Added

@@ -8,6 +8,7 @@ mod engine;
 mod files;
 #[cfg(test)]
 mod glyphs;
+mod help;
 mod hotkey;
 mod import;
 mod instance;

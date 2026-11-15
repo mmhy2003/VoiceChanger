@@ -18,7 +18,7 @@ Real-time AI voice changer for Windows, written in Rust. Runs RVC voice models l
 
 1. Download `Setup-VoiceChanger-X.Y.Z.exe` from [GitHub Releases](https://github.com/mmhy2003/VoiceChanger/releases).
 2. Run it. It installs for the current user without admin rights; installing for all users is optional in the setup dialog.
-3. Install [VB-CABLE](https://vb-audio.com/Cable/). When no virtual cable is found, the last setup page offers to open its download page.
+3. When no virtual cable is found, setup offers to download [VB-CABLE](https://vb-audio.com/Cable/) from vb-audio.com and install it. Windows asks you to approve VB-Audio's installer and its driver. VB-CABLE is VB-Audio's donationware and is not part of our installer. If you skip it, or the install fails, the last setup page offers to open the download page.
 
 Releases may be unsigned for now, so Windows SmartScreen may warn. Choose **More info** → **Run anyway**, after checking the installer against `SHA256SUMS.txt` from the same release.
 
@@ -113,7 +113,7 @@ The ONNX types in `crates/convert/src/onnx/onnx.rs` are generated; regenerate th
 
 Releases are made by a release PR from `develop` into `main` (see [AGENTS.md](AGENTS.md)). When it is merged, `.github/workflows/release.yml` tags `vX.Y.Z` and publishes the GitHub Release with the installer and `SHA256SUMS.txt`.
 
-There is no manual test step. CI and the release workflow run `installer\test-install.ps1` on a clean Windows runner. It installs per user, upgrades from the latest release (keeping user data), runs `voicechanger.exe --self-test` on the bundled models, checks the VB-CABLE prompt against fake cable endpoints, and uninstalls with and without `/PURGEDATA`. The release is only tagged and published when it passes. Afterwards the workflow downloads the published installer and checks it against `SHA256SUMS.txt`. The runners have no GPU or audio devices, so DirectML and real audio are not covered. The script deletes `%APPDATA%\VoiceChanger`, so it refuses to run where VoiceChanger is installed or has data.
+There is no manual test step. CI and the release workflow run `installer\test-install.ps1` on a clean Windows runner. It installs per user, upgrades from the latest release (keeping user data), runs `voicechanger.exe --self-test` on the bundled models, checks the VB-CABLE prompt against fake cable endpoints, installs a stub VB-CABLE pack from a local server (right and wrong hash, cable present, restart needed), checks that the pinned VB-CABLE pack still has its pinned SHA-256, and uninstalls with and without `/PURGEDATA`. The release is only tagged and published when it passes. Afterwards the workflow downloads the published installer and checks it against `SHA256SUMS.txt`. The runners have no GPU or audio devices, so DirectML and real audio are not covered. The script deletes `%APPDATA%\VoiceChanger`, so it refuses to run where VoiceChanger is installed or has data.
 
 To build the installer locally (needs Inno Setup 6.3+ and cargo-about):
 

@@ -181,6 +181,15 @@ pub fn items(topic: Topic) -> &'static [Item] {
     }
 }
 
+/// The entry of `id`. Every `Id` has exactly one (tested).
+pub fn item(id: Id) -> &'static Item {
+    Topic::ALL
+        .iter()
+        .flat_map(|t| items(*t))
+        .find(|i| i.id == Some(id))
+        .expect("every Id has an entry")
+}
+
 /// The range and default of `id`, from the same constants the controls use; `None` when it has none.
 pub fn range_text(id: Id) -> Option<String> {
     let voice = VoiceSettings::default();
@@ -268,6 +277,13 @@ mod tests {
                 .filter(|i| i.id == Some(id))
                 .count();
             assert_eq!(count, 1, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn item_finds_each_entry() {
+        for id in Id::ALL {
+            assert_eq!(item(id).id, Some(id));
         }
     }
 

@@ -1,12 +1,43 @@
-//! Drawing the help: the tab-bar button, F1 and the Help window.
+//! Drawing the help: hover tips, ? headings, the tab-bar button, F1 and the Help window.
 
 use eframe::egui;
 
-use super::{HelpState, Item, Topic};
+use super::{HelpState, Id, Item, Topic};
 use crate::app::Tab;
 
+/// Widest tip, in points.
+const TIP_WIDTH: f32 = 300.0;
 const WINDOW_WIDTH: f32 = 340.0;
 const WINDOW_HEIGHT: f32 = 380.0;
+
+/// Attaches `id`'s tip, also to a greyed-out widget.
+pub fn tip(response: egui::Response, id: Id) -> egui::Response {
+    response
+        .on_hover_ui(|ui| tip_body(ui, id))
+        .on_disabled_hover_ui(|ui| tip_body(ui, id))
+}
+
+fn tip_body(ui: &mut egui::Ui, id: Id) {
+    ui.set_max_width(TIP_WIDTH);
+    ui.label(super::item(id).short);
+    if let Some(range) = super::range_text(id) {
+        ui.weak(range);
+    }
+}
+
+/// A heading with a small "?" that opens Help on `topic`.
+pub fn heading(ui: &mut egui::Ui, help: &mut HelpState, text: &str, topic: Topic) {
+    ui.horizontal(|ui| {
+        ui.heading(text);
+        if ui
+            .small_button("?")
+            .on_hover_text(format!("Open Help on {}", topic.title()))
+            .clicked()
+        {
+            help.open_on(topic);
+        }
+    });
+}
 
 /// F1 with no modifiers, unless Settings is recording a hotkey.
 pub fn f1_pressed(ctx: &egui::Context, recording_hotkey: bool) -> bool {
@@ -113,6 +144,52 @@ mod tests {
             modifiers,
         };
         f1_in_frame(vec![event], modifiers, recording)
+    }
+
+    #[test]
+    fn tip_on_enabled_and_disabled_widgets() {
+        let ctx = egui::Context::default();
+        ctx.style_mut(|s| s.interaction.tooltip_delay = 0.0);
+        // Draws one frame and returns the rects of Start and Pitch.
+        let frame = |input: egui::RawInput| {
+            let mut rects = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let start = ui.button("Start");
+                    let start_id = start.id;
+                    let start = tip(start, Id::StartStop);
+                    assert_eq!(start.id, start_id);
+                    let pitch = ui.add_enabled(false, egui::Button::new("Pitch"));
+                    let pitch_id = pitch.id;
+                    let pitch = tip(pitch, Id::Pitch);
+                    assert_eq!(pitch.id, pitch_id);
+                    rects = (start.rect, pitch.rect);
+                });
+            });
+            rects
+        };
+        let (start, pitch) = frame(egui::RawInput::default());
+        for target in [pitch, start] {
+            for _ in 0..2 {
+                frame(egui::RawInput {
+                    events: vec![egui::Event::PointerMoved(target.center())],
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn heading_question_opens_topic() {
+        let ctx = egui::Context::default();
+        let mut h = HelpState::at_startup(false);
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| heading(ui, &mut h, "Voice", Topic::Voice));
+            });
+        }
+        assert!(!h.open);
     }
 
     #[test]

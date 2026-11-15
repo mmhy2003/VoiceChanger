@@ -9,6 +9,7 @@ use vc_models::{LibraryError, PITCH_RANGE};
 
 use crate::app::{Tab, VcApp};
 use crate::files;
+use crate::help::{self, Id, Topic};
 use crate::import::{Notice, offer_convert_text};
 use crate::model::ModelSlot;
 use crate::tabs::voice::khz;
@@ -17,16 +18,18 @@ use crate::tabs::voice::khz;
 const RATES: [u32; 3] = [32000, 40000, 48000];
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
-    ui.heading("Models");
+    help::ui::heading(ui, &mut app.help, "Models", Topic::Models);
 
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(app.import_pick_rx.is_none(), egui::Button::new("Import…"))
-            .clicked()
+        if help::ui::tip(
+            ui.add_enabled(app.import_pick_rx.is_none(), egui::Button::new("Import…")),
+            Id::Import,
+        )
+        .clicked()
         {
             app.pick_import();
         }
-        if ui.button("Open folder").clicked() {
+        if help::ui::tip(ui.button("Open folder"), Id::OpenFolder).clicked() {
             files::open_folder(app.library.root());
         }
     });
@@ -106,15 +109,19 @@ fn rows(ui: &mut egui::Ui, app: &mut VcApp) -> Option<Action> {
         let exists = app.library.file_exists(entry);
         let is_active = app.prefs.last_model.as_deref() == Some(id.as_str());
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(exists && i > 0, egui::Button::new("⏶"))
-                .clicked()
+            if help::ui::tip(
+                ui.add_enabled(exists && i > 0, egui::Button::new("⏶")),
+                Id::Reorder,
+            )
+            .clicked()
             {
                 action = Some(Action::MoveUp(id.clone()));
             }
-            if ui
-                .add_enabled(exists && i + 1 < entries.len(), egui::Button::new("⏷"))
-                .clicked()
+            if help::ui::tip(
+                ui.add_enabled(exists && i + 1 < entries.len(), egui::Button::new("⏷")),
+                Id::Reorder,
+            )
+            .clicked()
             {
                 action = Some(Action::MoveDown(id.clone()));
             }
@@ -134,22 +141,27 @@ fn rows(ui: &mut egui::Ui, app: &mut VcApp) -> Option<Action> {
                 if ui.button("Cancel").clicked() {
                     action = Some(Action::CancelRename);
                 }
-            } else if ui
-                .add_enabled(exists, egui::Button::selectable(is_active, &entry.name))
-                .clicked()
+            } else if help::ui::tip(
+                ui.add_enabled(exists, egui::Button::selectable(is_active, &entry.name)),
+                Id::ModelName,
+            )
+            .clicked()
             {
                 action = Some(Action::Select(id.clone()));
             }
 
             ui.label(khz(entry.sample_rate));
             ui.add_enabled_ui(exists, |ui| {
-                ui.label("Default pitch");
+                help::ui::tip(ui.label("Default pitch"), Id::DefaultPitch);
                 let drag = &mut app.models_ui.pitch_drag;
                 let mut pitch = match drag {
                     Some((dragging, held)) if dragging == id => *held,
                     _ => entry.default_pitch,
                 };
-                let resp = ui.add(egui::DragValue::new(&mut pitch).range(PITCH_RANGE));
+                let resp = help::ui::tip(
+                    ui.add(egui::DragValue::new(&mut pitch).range(PITCH_RANGE)),
+                    Id::DefaultPitch,
+                );
                 let (changed, dragged) = (resp.changed(), resp.dragged());
                 if let Some(pitch) =
                     pitch_edit(drag, id, pitch, changed, dragged, resp.drag_stopped())
@@ -157,19 +169,23 @@ fn rows(ui: &mut egui::Ui, app: &mut VcApp) -> Option<Action> {
                     action = Some(Action::Pitch(id.clone(), pitch));
                 }
             });
-            if ui
-                .add_enabled(exists && !picking_icon, egui::Button::new("Icon…"))
-                .clicked()
+            if help::ui::tip(
+                ui.add_enabled(exists && !picking_icon, egui::Button::new("Icon…")),
+                Id::IconRenameDelete,
+            )
+            .clicked()
             {
                 action = Some(Action::PickIcon(id.clone()));
             }
-            if ui
-                .add_enabled(exists, egui::Button::new("Rename"))
-                .clicked()
+            if help::ui::tip(
+                ui.add_enabled(exists, egui::Button::new("Rename")),
+                Id::IconRenameDelete,
+            )
+            .clicked()
             {
                 action = Some(Action::StartRename(id.clone(), entry.name.clone()));
             }
-            if ui.button("Delete").clicked() {
+            if help::ui::tip(ui.button("Delete"), Id::IconRenameDelete).clicked() {
                 action = Some(Action::AskDelete(id.clone()));
             }
             if !exists {

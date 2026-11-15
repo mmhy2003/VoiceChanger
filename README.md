@@ -55,6 +55,10 @@ The `--stream` form runs the real-time streamer over the file and prints the per
 - Only RVC WebUI ONNX exports with F0 (fp32) are supported. fp16 exports and models without F0 are rejected.
 - `--provider dml` (the default) uses DirectML. `--provider cuda` needs a CUDA build of `onnxruntime.dll` in place of the DirectML one. If a provider fails, the engine falls back to the CPU with a warning.
 
+## Help
+
+Hover any control to see what it does, with its range and default. **? Help** in the tab bar, **F1**, or the **?** next to a heading opens the Help window: Getting started, a page for each part of the app and Troubleshooting. It opens by itself once, the first time VoiceChanger starts on a fresh install.
+
 ## Original voice and Bypass
 
 The Voice tab's Model list starts with **Original voice (no model)**. With it selected, Start sends your microphone to the virtual cable unchanged, so other apps hear your real voice. No voice model and no GPU are used, and it is what a fresh install starts on.

@@ -8,6 +8,7 @@ mod engine;
 mod files;
 #[cfg(test)]
 mod glyphs;
+mod help;
 mod hotkey;
 mod import;
 mod instance;
@@ -64,6 +65,7 @@ fn main() -> eframe::Result {
         }
     };
     let dirs = paths::AppDirs::system();
+    let first_run = config::first_run(&dirs.settings_file());
     let (config, note) = config::load(&dirs.settings_file());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -78,6 +80,7 @@ fn main() -> eframe::Result {
         config,
         notes: note.into_iter().collect(),
         instance,
+        first_run,
     };
     eframe::run_native(
         &app::window_title(),

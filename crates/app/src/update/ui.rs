@@ -5,6 +5,7 @@ use eframe::egui;
 use super::state::Phase;
 use super::version::Version;
 use crate::app::VcApp;
+use crate::help::{self, Id};
 
 /// One line above the tabs while an update is offered, with View… and ✖.
 pub fn banner(ui: &mut egui::Ui, app: &mut VcApp) {
@@ -96,25 +97,29 @@ pub fn window(ctx: &egui::Context, app: &mut VcApp) {
 /// Settings → General: automatic checks, background downloads and Check for updates.
 pub fn settings_rows(ui: &mut egui::Ui, app: &mut VcApp) {
     let prefs = &mut app.prefs.updates;
-    ui.checkbox(
-        &mut prefs.auto_check,
-        "Check for updates automatically (every 6 hours)",
-    );
-    ui.add_enabled(
-        prefs.auto_check,
-        egui::Checkbox::new(
-            &mut prefs.auto_download,
-            "Download updates in the background",
+    help::ui::tip(
+        ui.checkbox(
+            &mut prefs.auto_check,
+            "Check for updates automatically (every 6 hours)",
         ),
+        Id::Updates,
+    );
+    help::ui::tip(
+        ui.add_enabled(
+            prefs.auto_check,
+            egui::Checkbox::new(
+                &mut prefs.auto_download,
+                "Download updates in the background",
+            ),
+        ),
+        Id::Updates,
     );
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(
-                app.updates.can_check(),
-                egui::Button::new("Check for updates"),
-            )
-            .clicked()
-        {
+        let check = ui.add_enabled(
+            app.updates.can_check(),
+            egui::Button::new("Check for updates"),
+        );
+        if help::ui::tip(check, Id::Updates).clicked() {
             app.check_for_updates(true);
         }
         if matches!(app.updates.phase, Phase::Checking { .. }) {

@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use eframe::egui;
 
+use crate::help::{self, Id};
+
 /// What the status bar shows, read once per frame while running.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusSnapshot {
@@ -51,7 +53,7 @@ pub fn inference_text(s: &StatusSnapshot) -> String {
 pub fn status_text(s: &StatusSnapshot) -> String {
     parts(s)
         .into_iter()
-        .map(|(text, _)| text)
+        .map(|(text, _, _)| text)
         .collect::<Vec<_>>()
         .join(SEPARATOR)
 }
@@ -64,18 +66,21 @@ pub fn ratio_warn(s: &StatusSnapshot) -> bool {
     s.ratio > RATIO_WARN
 }
 
-/// Draws the parts in one row, warnings in the theme's warning colour.
+/// Draws the parts in one row, warnings in the theme's warning colour, each with its tip.
 pub fn show(ui: &mut egui::Ui, s: &StatusSnapshot) {
     let warn_color = ui.visuals().warn_fg_color;
     ui.horizontal(|ui| {
-        for (i, (text, warn)) in parts(s).into_iter().enumerate() {
+        for (i, (text, warn, help)) in parts(s).into_iter().enumerate() {
             if i > 0 {
                 ui.label(SEPARATOR.trim());
             }
-            if warn {
-                ui.colored_label(warn_color, text);
+            let resp = if warn {
+                ui.colored_label(warn_color, text)
             } else {
-                ui.label(text);
+                ui.label(text)
+            };
+            if let Some(id) = help {
+                help::ui::tip(resp, id);
             }
         }
     });
@@ -83,21 +88,33 @@ pub fn show(ui: &mut egui::Ui, s: &StatusSnapshot) {
 
 const SEPARATOR: &str = " · ";
 
-/// Each part's text and whether it is a warning.
-fn parts(s: &StatusSnapshot) -> Vec<(String, bool)> {
+/// Each part's text, whether it is a warning, and its help entry.
+fn parts(s: &StatusSnapshot) -> Vec<(String, bool, Option<Id>)> {
     if s.original {
         return vec![
-            (latency_text(s), latency_warn(s)),
-            ("Original voice (no conversion)".to_string(), false),
-            (format!("underruns {}", s.underruns), false),
+            (latency_text(s), latency_warn(s), Some(Id::Latency)),
+            ("Original voice (no conversion)".to_string(), false, None),
+            (
+                format!("underruns {}", s.underruns),
+                false,
+                Some(Id::Underruns),
+            ),
         ];
     }
     vec![
-        (latency_text(s), latency_warn(s)),
-        (inference_text(s), ratio_warn(s)),
-        (s.provider.clone(), false),
-        (format!("late blocks {}", s.late_blocks), false),
-        (format!("underruns {}", s.underruns), false),
+        (latency_text(s), latency_warn(s), Some(Id::Latency)),
+        (inference_text(s), ratio_warn(s), Some(Id::Inference)),
+        (s.provider.clone(), false, Some(Id::Provider)),
+        (
+            format!("late blocks {}", s.late_blocks),
+            false,
+            Some(Id::LateBlocks),
+        ),
+        (
+            format!("underruns {}", s.underruns),
+            false,
+            Some(Id::Underruns),
+        ),
     ]
 }
 
@@ -149,6 +166,36 @@ mod tests {
             "Latency 52 ms · Original voice (no conversion) · underruns 0"
         );
         assert!(!latency_warn(&s));
+    }
+
+    #[test]
+    fn parts_carry_help_entries() {
+        let helps =
+            |s: &StatusSnapshot| parts(s).into_iter().map(|(_, _, h)| h).collect::<Vec<_>>();
+        assert_eq!(
+            helps(&snapshot()),
+            [
+                Some(Id::Latency),
+                Some(Id::Inference),
+                Some(Id::Provider),
+                Some(Id::LateBlocks),
+                Some(Id::Underruns)
+            ]
+        );
+        let original = StatusSnapshot {
+            latency: Duration::from_millis(52),
+            original: true,
+            inference: Duration::ZERO,
+            block: Duration::ZERO,
+            ratio: 0.0,
+            provider: String::new(),
+            late_blocks: 0,
+            underruns: 0,
+        };
+        assert_eq!(
+            helps(&original),
+            [Some(Id::Latency), None, Some(Id::Underruns)]
+        );
     }
 
     #[test]

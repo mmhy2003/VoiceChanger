@@ -34,8 +34,9 @@ impl MeterState {
     }
 }
 
-/// Draws `label` and a bar for the linear peak `shown`, with its level in dB.
-pub fn meter(ui: &mut egui::Ui, label: &str, shown: f32) {
+/// Draws `label` and a bar for the linear peak `shown`, with its level in dB, and returns the
+/// row's response.
+pub fn meter(ui: &mut egui::Ui, label: &str, shown: f32) -> egui::Response {
     let db = gain_to_db(shown);
     let text = if db < FLOOR_DB {
         "-∞ dB".to_string()
@@ -45,7 +46,8 @@ pub fn meter(ui: &mut egui::Ui, label: &str, shown: f32) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.add(egui::ProgressBar::new(level_to_fraction(shown)).text(text));
-    });
+    })
+    .response
 }
 
 #[cfg(test)]

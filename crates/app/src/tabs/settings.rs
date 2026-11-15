@@ -172,7 +172,9 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
         app.restart_requested = true;
     }
 
-    if running && let Some(warning) = inference_warning(app.stats.ratio()) {
+    if app.is_converting()
+        && let Some(warning) = inference_warning(app.stats.ratio())
+    {
         ui.colored_label(ui.visuals().warn_fg_color, warning);
     }
 }

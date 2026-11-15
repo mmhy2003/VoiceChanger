@@ -3,8 +3,13 @@
 Installs, upgrades and uninstalls a built Setup-VoiceChanger-<Version>.exe and checks the result.
 CI runs it after the installer smoke build, and release.yml runs it before publishing.
 .DESCRIPTION
-Checks: per-user install without admin, files and file version, `voicechanger.exe --self-test`,
-the VB-CABLE check (against fake endpoints under HKCU), upgrade keeps user data, the in-app
+Checks first that the VB-CABLE pack pinned in setup.iss still downloads with the pinned SHA-256
+and contains the pinned setup exe. It serves fake VB-CABLE packs from a local HTTP server on
+127.0.0.1 (setup's test-only /CableUrl= and /CableSha256= switches). Then: per-user install without admin, files and file version, `voicechanger.exe --self-test`,
+the VB-CABLE check (against fake endpoints under HKCU), a silent install without /INSTALLCABLE
+downloads nothing, /CableUrl= outside 127.0.0.1 is ignored, /INSTALLCABLE downloads the pack,
+refuses a wrong SHA-256, runs the setup exe with -i -h, asks for a restart when no cable shows up
+and downloads nothing when a cable is present, upgrade keeps user data, the in-app
 updater's /SILENT /RELAUNCH upgrade starts voicechanger.exe again while a silent install without
 /RELAUNCH does not, a silent uninstall keeps user data and /PURGEDATA removes it.
 It deletes %APPDATA%\VoiceChanger and %LOCALAPPDATA%\VoiceChanger, so it refuses to run when
@@ -23,6 +28,25 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Get-PinnedValue([string] $Name) {
+    $m = Select-String -Path (Join-Path $PSScriptRoot 'setup.iss') -Pattern "^#define $Name `"(.+)`"$"
+    if (-not $m) { throw "setup.iss has no #define $Name" }
+    $m.Matches[0].Groups[1].Value
+}
+
+# Downloads the pinned VB-CABLE pack: fails when vb-audio.com changes it under the same URL.
+function Test-CablePin {
+    $url = Get-PinnedValue 'CableUrl'; $sha = Get-PinnedValue 'CableSha256'; $exe = Get-PinnedValue 'CableSetupExe'
+    $dir = Join-Path ([IO.Path]::GetTempPath()) "vc-cable-pin-$PID"; New-Item -ItemType Directory -Force $dir | Out-Null; $zip = Join-Path $dir 'pack.zip'
+    for ($i = 1; $true; $i++) { try { Invoke-WebRequest -UseBasicParsing $url -OutFile $zip; break } catch { if ($i -ge 4) { throw "FAIL: could not download $url ($_)" }; Start-Sleep -Seconds (5 * $i) } }
+    $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+    Assert ($got -eq $sha) "the pinned VB-CABLE pack $url has SHA-256 $sha (got $got)"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $a = [IO.Compression.ZipFile]::OpenRead($zip); try { $names = @($a.Entries.FullName) } finally { $a.Dispose() }
+    Assert ($names -contains ($exe -replace '\\','/')) "the pinned pack contains $exe"
+    Remove-Item -Recurse -Force $dir
+}
+
 $appId = '{7C3B9E52-4A1D-4F6E-9B8A-2D5E1C0F7A34}_is1'
 $uninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"
 $appDir = Join-Path $env:LOCALAPPDATA 'Programs\VoiceChanger'
@@ -39,13 +63,96 @@ function Assert([bool] $Condition, [string] $Message) {
     Write-Host "ok: $Message"
 }
 
+$cableEndpoint = "$fakeCables\{00000000-0000-0000-0000-000000000002}"
+$packDir = Join-Path $logs 'packs'
+$requests = Join-Path $logs 'requests.txt'
+$stubArgs = Join-Path $logs 'stub-args.txt'
+
+# A UAC prompt or a hang fails the run instead of blocking the runner.
 function Install([string] $Path, [string] $Name, [string[]] $Extra = @(), [string] $Quiet = '/VERYSILENT') {
     $log = Join-Path $logs "$Name.log"
-    $p = Start-Process -FilePath $Path -Wait -PassThru `
+    $p = Start-Process -FilePath $Path -PassThru `
         -ArgumentList (@($Quiet, '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"") + $Extra)
+    $null = $p.Handle   # keeps ExitCode readable after the process ends
+    if (-not $p.WaitForExit(600000)) { $p | Stop-Process -Force; throw "FAIL: $Name did not finish within 10 minutes (log $log)" }
     Assert ($p.ExitCode -eq 0) "$Name exits with 0 (got $($p.ExitCode), log $log)"
     Get-Content -Raw $log
 }
+
+# Serves files from $Root on 127.0.0.1 and appends each request path to $Log. No URL ACL or admin needed.
+function Start-PackServer([string] $Root, [string] $Log) {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $job = Start-ThreadJob -ArgumentList $listener, $Root, $Log -ScriptBlock {
+        param($listener, $root, $log)
+        while ($true) {
+            $client = $listener.AcceptTcpClient()
+            try {
+                $stream = $client.GetStream()
+                $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+                $method, $path = ($reader.ReadLine() -split ' ')[0, 1]
+                while ($reader.ReadLine()) { }
+                Add-Content -Path $log -Value $path
+                $file = Join-Path $root $path.TrimStart('/')
+                if ($path -match '^/[\w.-]+$' -and (Test-Path $file -PathType Leaf)) {
+                    $body = [IO.File]::ReadAllBytes($file); $status = '200 OK'
+                } else {
+                    $body = [byte[]]::new(0); $status = '404 Not Found'
+                }
+                $head = [Text.Encoding]::ASCII.GetBytes(
+                    "HTTP/1.1 $status`r`nContent-Type: application/zip`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
+                $stream.Write($head, 0, $head.Length)
+                if ($method -ne 'HEAD') { $stream.Write($body, 0, $body.Length) }
+                $stream.Flush()
+            } catch { } finally { $client.Close() }
+        }
+    }
+    [pscustomobject]@{ Listener = $listener; Job = $job; Url = "http://127.0.0.1:$($listener.LocalEndpoint.Port)" }
+}
+
+# Builds $packDir\<Name>.zip holding a stub VBCABLE_Setup_x64.exe that records its arguments in
+# $stubArgs and, with -CreatesCable, adds an active "CABLE Input" endpoint under $cableEndpoint.
+function New-StubPack([string] $Name, [switch] $CreatesCable) {
+    $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    $work = Join-Path $logs "stub-$Name"
+    $content = Join-Path $work 'pack'
+    $exe = Join-Path $content (Get-PinnedValue 'CableSetupExe')   # keeps the real pack's layout
+    New-Item -ItemType Directory -Force (Split-Path -Parent $exe), $packDir | Out-Null
+    $create = if ($CreatesCable) { 'true' } else { 'false' }
+    $source = @"
+using System.IO;
+using Microsoft.Win32;
+class Stub {
+    // Not a constant: `if (false)` would make csc warn about unreachable code.
+    static readonly bool CreatesCable = $create;
+    static int Main(string[] args) {
+        File.WriteAllText(@"$stubArgs", string.Join(" ", args));
+        if (CreatesCable) {
+            using (var k = Registry.CurrentUser.CreateSubKey(@"$cableEndpoint"))
+                k.SetValue("DeviceState", 1, RegistryValueKind.DWord);
+            using (var p = Registry.CurrentUser.CreateSubKey(@"$cableEndpoint\Properties"))
+                p.SetValue("{a45c254e-df1c-4efd-8020-67d146a850e0},2", "CABLE Input");
+        }
+        return 0;
+    }
+}
+"@
+    Set-Content -Encoding utf8 (Join-Path $work 'stub.cs') $source
+    # Out-Host: compiler messages must not end up in the hash this function returns.
+    & $csc /nologo /target:exe "/out:$exe" (Join-Path $work 'stub.cs') | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "csc failed with exit code $LASTEXITCODE" }
+    $zip = Join-Path $packDir "$Name.zip"
+    Compress-Archive -Force -Path (Join-Path $content '*') -DestinationPath $zip
+    (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+}
+
+function Reset-CableTest {
+    Remove-Item -Recurse -Force "HKCU:\$fakeCables" -ErrorAction SilentlyContinue
+    Remove-Item -Force $requests, $stubArgs -ErrorAction SilentlyContinue
+}
+
+# The leading comma keeps an empty or one-line list an array: under StrictMode $null.Count throws.
+function Get-Requests { if (Test-Path $requests) { , @(Get-Content $requests) } else { , @() } }
 
 # The uninstaller re-launches itself from %TEMP% and returns at once: wait for it to finish.
 function Uninstall([string] $Name, [string[]] $Extra = @()) {
@@ -75,13 +182,16 @@ function Test-UserData {
     (Test-Path (Join-Path $local 'cache.txt'))
 }
 
+Test-CablePin
+
 $Setup = (Resolve-Path $Setup).Path
 if ($Previous) { $Previous = (Resolve-Path $Previous).Path }
 $existing = @($appDir, $roaming, $local | Where-Object { Test-Path $_ })
 if ((Test-Path "HKCU:\$uninstallKey") -or $existing.Count -gt 0) {
     throw "Refusing to run: VoiceChanger is installed or has user data ($($existing -join ', ')). Run on a clean machine."
 }
-New-Item -ItemType Directory -Force $logs | Out-Null
+New-Item -ItemType Directory -Force $logs, $packDir | Out-Null
+$server = Start-PackServer $packDir $requests
 
 try {
     # 1. Install the previous version (or this one), add user data, then upgrade to this build.
@@ -92,6 +202,8 @@ try {
     }
     Seed-UserData
     $log = Install $Setup 'upgrade' @('/RELAUNCH') '/SILENT'
+    Assert ((Get-Requests).Count -eq 0) 'a silent install without /INSTALLCABLE downloads nothing'
+    Assert ($log -notmatch 'VoiceChanger: downloading VB-CABLE') 'a silent install without /INSTALLCABLE does not install VB-CABLE'
 
     Assert ($log -match 'Administrative install mode: No') 'setup runs without admin rights'
     Assert ($log -match 'Install mode root key: HKEY_CURRENT_USER') 'setup installs per user'
@@ -135,6 +247,40 @@ try {
 
     # 3. The VB-CABLE prompt follows the cable check, with and without a (fake) cable endpoint.
     Assert ($log -match 'VoiceChanger: virtual cable not found') 'no cable: the finish page offers the VB-CABLE download'
+    # Without /INSTALLCABLE the pack is never downloaded, so the real driver never runs here.
+    Reset-CableTest
+    $log = Install $Setup 'cable-url-not-local' @('/CableUrl=https://example.com/VBCABLE.zip',
+        '/CableSha256=0000000000000000000000000000000000000000000000000000000000000000', "/CableRegistryKey=$fakeCables")
+    Assert ($log -match [regex]::Escape('VoiceChanger: ignoring /CableUrl=https://example.com/VBCABLE.zip')) '/CableUrl= outside 127.0.0.1 is ignored'
+    Assert ($log -match [regex]::Escape('VoiceChanger: VB-CABLE pack ' + (Get-PinnedValue 'CableUrl'))) 'setup keeps the pinned pack URL'
+
+    # /INSTALLCABLE with a local fake pack: setup downloads, checks, unzips and runs the stub installer.
+    $okSha = New-StubPack 'ok' -CreatesCable
+    $noneSha = New-StubPack 'none'
+    $cable = @('/INSTALLCABLE', "/CableRegistryKey=$fakeCables")
+    # Case 3: wrong hash
+    Reset-CableTest
+    $log = Install $Setup 'cable-bad-hash' ($cable + "/CableUrl=$($server.Url)/ok.zip", '/CableSha256=0000000000000000000000000000000000000000000000000000000000000000')
+    Assert ($log -match 'VoiceChanger: VB-CABLE not installed: ') 'a changed pack is not installed'
+    Assert (-not (Test-Path $stubArgs)) 'a pack with the wrong hash is never run'
+    Assert (Test-Path (Join-Path $appDir 'voicechanger.exe')) 'VoiceChanger installs although VB-CABLE failed'
+    # Case 4: VB-Audio's installer ran, but no endpoint showed up
+    Reset-CableTest
+    $log = Install $Setup 'cable-restart' ($cable + "/CableUrl=$($server.Url)/none.zip", "/CableSha256=$noneSha")
+    Assert ($log -match 'VoiceChanger: VB-CABLE restart needed') 'no cable after VB-Audio''s installer: setup asks for a restart'
+    # Case 2: installs
+    Reset-CableTest
+    $log = Install $Setup 'cable-install' ($cable + "/CableUrl=$($server.Url)/ok.zip", "/CableSha256=$okSha")
+    Assert ((Get-Requests) -contains '/ok.zip') 'setup downloads the pack'
+    Assert ((Test-Path $stubArgs) -and (Get-Content -Raw $stubArgs).Trim() -eq '-i -h') 'VB-Audio''s installer runs with -i -h'
+    Assert ($log -match 'VoiceChanger: VB-CABLE installed') 'setup installs VB-CABLE'
+    Assert ($log -match 'VoiceChanger: virtual cable found') 'after the install the finish page no longer offers the download'
+    # Case 5: cable present (the endpoint the stub created in case 2)
+    Remove-Item -Force $requests -ErrorAction SilentlyContinue
+    $log = Install $Setup 'cable-present' ($cable + "/CableUrl=$($server.Url)/ok.zip", "/CableSha256=$okSha")
+    Assert ((Get-Requests).Count -eq 0) 'with a cable present setup downloads nothing'
+
+    Reset-CableTest
     $endpoint = "HKCU:\$fakeCables\{00000000-0000-0000-0000-000000000001}"
     New-Item -Force "$endpoint\Properties" | Out-Null
     New-ItemProperty -Force $endpoint -Name DeviceState -PropertyType DWord -Value 1 | Out-Null
@@ -152,7 +298,16 @@ try {
     Assert (-not (Test-Path $roaming)) "uninstall /PURGEDATA removes $roaming"
     Assert (-not (Test-Path $local)) "uninstall /PURGEDATA removes $local"
     Write-Host "installer test passed: $Setup"
+} catch {
+    # CI keeps no files: show the VoiceChanger, download and error lines of the newest setup log.
+    Get-ChildItem -File $logs -Filter *.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime |
+        Select-Object -Last 1 | ForEach-Object {
+            Write-Host "--- $($_.Name)"
+            Select-String -Path $_.FullName -Pattern 'VoiceChanger:|download|error|exception|Exec|runas' | ForEach-Object { Write-Host $_.Line }
+        }
+    throw
 } finally {
+    if (Get-Variable server -ErrorAction SilentlyContinue) { $server.Listener.Stop(); $server.Job | Remove-Job -Force }
     Remove-Item -Recurse -Force 'HKCU:\Software\VoiceChangerInstallerTest' -ErrorAction SilentlyContinue
     Write-Host "setup logs: $logs"
 }

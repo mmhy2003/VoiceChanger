@@ -1,4 +1,5 @@
-//! Status bar: measured latency, inference time per block and the active provider.
+//! Status bar: measured latency, inference time per block and the active provider, or that the
+//! original voice is sent.
 
 use std::time::Duration;
 
@@ -9,6 +10,8 @@ use eframe::egui;
 pub struct StatusSnapshot {
     /// End-to-end latency; zero until the first block.
     pub latency: Duration,
+    /// The session sends the original voice: there is no inference, provider or late block to show.
+    pub original: bool,
     /// Last inference time per block.
     pub inference: Duration,
     pub block: Duration,
@@ -81,8 +84,15 @@ pub fn show(ui: &mut egui::Ui, s: &StatusSnapshot) {
 const SEPARATOR: &str = " · ";
 
 /// Each part's text and whether it is a warning.
-fn parts(s: &StatusSnapshot) -> [(String, bool); 5] {
-    [
+fn parts(s: &StatusSnapshot) -> Vec<(String, bool)> {
+    if s.original {
+        return vec![
+            (latency_text(s), latency_warn(s)),
+            ("Original voice (no conversion)".to_string(), false),
+            (format!("underruns {}", s.underruns), false),
+        ];
+    }
+    vec![
         (latency_text(s), latency_warn(s)),
         (inference_text(s), ratio_warn(s)),
         (s.provider.clone(), false),
@@ -103,6 +113,7 @@ mod tests {
     fn snapshot() -> StatusSnapshot {
         StatusSnapshot {
             latency: Duration::from_millis(480),
+            original: false,
             inference: Duration::from_millis(140),
             block: Duration::from_millis(250),
             ratio: 0.56,
@@ -119,6 +130,25 @@ mod tests {
             "Latency 480 ms · Inference 140 ms / 250 ms (56%) · DirectML (GPU 0) \
              · late blocks 0 · underruns 3"
         );
+    }
+
+    #[test]
+    fn status_text_original() {
+        let s = StatusSnapshot {
+            latency: Duration::from_millis(52),
+            original: true,
+            inference: Duration::ZERO,
+            block: Duration::ZERO,
+            ratio: 0.0,
+            provider: String::new(),
+            late_blocks: 0,
+            underruns: 0,
+        };
+        assert_eq!(
+            status_text(&s),
+            "Latency 52 ms · Original voice (no conversion) · underruns 0"
+        );
+        assert!(!latency_warn(&s));
     }
 
     #[test]

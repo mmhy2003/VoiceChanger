@@ -6,7 +6,7 @@ Real-time AI voice changer for Windows, written in Rust. Runs RVC voice models l
 
 ## Status
 
-1.1.0 is the latest release. Download the installer from [Releases](https://github.com/mmhy2003/VoiceChanger/releases). From 1.1.0 on, VoiceChanger updates itself.
+1.2.0 is the latest release. Download the installer from [Releases](https://github.com/mmhy2003/VoiceChanger/releases). From 1.1.0 on, VoiceChanger updates itself.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ Real-time AI voice changer for Windows, written in Rust. Runs RVC voice models l
 
 1. Download `Setup-VoiceChanger-X.Y.Z.exe` from [GitHub Releases](https://github.com/mmhy2003/VoiceChanger/releases).
 2. Run it. It installs for the current user without admin rights; installing for all users is optional in the setup dialog.
-3. Install [VB-CABLE](https://vb-audio.com/Cable/). When no virtual cable is found, the last setup page offers to open its download page.
+3. When no virtual cable is found, setup offers to download [VB-CABLE](https://vb-audio.com/Cable/) from vb-audio.com and install it. Windows asks you to approve VB-Audio's installer and its driver. VB-CABLE is VB-Audio's donationware and is not part of our installer. If you skip it, or the install fails, the last setup page offers to open the download page.
 
 Releases may be unsigned for now, so Windows SmartScreen may warn. Choose **More info** → **Run anyway**, after checking the installer against `SHA256SUMS.txt` from the same release.
 
@@ -55,6 +55,12 @@ The `--stream` form runs the real-time streamer over the file and prints the per
 - Only RVC WebUI ONNX exports with F0 (fp32) are supported. fp16 exports and models without F0 are rejected.
 - `--provider dml` (the default) uses DirectML. `--provider cuda` needs a CUDA build of `onnxruntime.dll` in place of the DirectML one. If a provider fails, the engine falls back to the CPU with a warning.
 
+## Original voice and Bypass
+
+The Voice tab's Model list starts with **Original voice (no model)**. With it selected, Start sends your microphone to the virtual cable unchanged, so other apps hear your real voice. No voice model and no GPU are used, and it is what a fresh install starts on.
+
+With a voice selected, **Bypass: send my original voice** switches a running voice to your original voice and back. It is on the Voice tab and in the tray menu. The model stays loaded; the audio restarts underneath, so there is a short gap. Pitch and the noise gate apply to converted voices only. Bypass is not saved: it is off each time VoiceChanger starts.
+
 ## Model library and settings
 
 Import a voice on the Models tab with **Import…** or by dropping `.onnx` files on the window. Each model is checked and copied into the library. If the model does not say its sample rate, the app asks for it (32, 40 or 48 kHz). A dropped or picked `.pth` or `.zip` is not imported: the app offers to open it in the Convert tab instead. Dropping it on the Convert tab opens it there directly.
@@ -70,7 +76,7 @@ VoiceChanger keeps its files in four folders:
 
 The global Start/Stop hotkey is off by default. Set it in Settings → General; the combination needs at least one modifier (Ctrl, Alt or Shift); Esc cancels recording.
 
-Closing the window hides VoiceChanger to the system tray, where the voice keeps running. Click the tray icon to open the window, or right-click it for Open VoiceChanger, Start, Stop and Exit; only Exit closes the app. Settings → General → **Start in the tray** launches it with only the tray icon.
+Closing the window hides VoiceChanger to the system tray, where the voice keeps running. Click the tray icon to open the window, or right-click it for Open VoiceChanger, Start, Stop, Bypass and Exit; only Exit closes the app. Settings → General → **Start in the tray** launches it with only the tray icon.
 
 If `settings.toml` or `library.toml` cannot be read, it is kept as `settings.toml.bad` or `library.toml.bad` and the app starts with defaults or an empty library. Model files are never deleted.
 
@@ -107,7 +113,7 @@ The ONNX types in `crates/convert/src/onnx/onnx.rs` are generated; regenerate th
 
 Releases are made by a release PR from `develop` into `main` (see [AGENTS.md](AGENTS.md)). When it is merged, `.github/workflows/release.yml` tags `vX.Y.Z` and publishes the GitHub Release with the installer and `SHA256SUMS.txt`.
 
-There is no manual test step. CI and the release workflow run `installer\test-install.ps1` on a clean Windows runner. It installs per user, upgrades from the latest release (keeping user data), runs `voicechanger.exe --self-test` on the bundled models, checks the VB-CABLE prompt against fake cable endpoints, and uninstalls with and without `/PURGEDATA`. The release is only tagged and published when it passes. Afterwards the workflow downloads the published installer and checks it against `SHA256SUMS.txt`. The runners have no GPU or audio devices, so DirectML and real audio are not covered. The script deletes `%APPDATA%\VoiceChanger`, so it refuses to run where VoiceChanger is installed or has data.
+There is no manual test step. CI and the release workflow run `installer\test-install.ps1` on a clean Windows runner. It installs per user, upgrades from the latest release (keeping user data), runs `voicechanger.exe --self-test` on the bundled models, checks the VB-CABLE prompt against fake cable endpoints, installs a stub VB-CABLE pack from a local server (right and wrong hash, cable present, restart needed), checks that the pinned VB-CABLE pack still has its pinned SHA-256, and uninstalls with and without `/PURGEDATA`. The release is only tagged and published when it passes. Afterwards the workflow downloads the published installer and checks it against `SHA256SUMS.txt`. The runners have no GPU or audio devices, so DirectML and real audio are not covered. The script deletes `%APPDATA%\VoiceChanger`, so it refuses to run where VoiceChanger is installed or has data.
 
 To build the installer locally (needs Inno Setup 6.3+ and cargo-about):
 

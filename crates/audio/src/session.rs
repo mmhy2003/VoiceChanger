@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
-use crate::devices::{DeviceRef, Selection};
+use crate::devices::{DeviceRef, Selection, device_name};
 use crate::processor::Processor;
 use crate::ring::{self, HeapCons, HeapProd};
 use crate::shared::{Endpoint, Shared, StreamStatus};
@@ -90,7 +90,7 @@ where
     }
     devices
         .ok()
-        .and_then(|mut ds| ds.find(|d| d.description().is_ok_and(|desc| desc.name() == r.name)))
+        .and_then(|mut ds| ds.find(|d| device_name(d).is_some_and(|n| n == r.name)))
         .ok_or_else(|| StartError::DeviceNotFound(r.name.clone()))
 }
 
@@ -261,7 +261,7 @@ impl AudioSession {
             out_conses.push(cons);
         }
 
-        let proc_rate = processor.out_rate();
+        let proc_rate = processor.out_rate(input.rate);
         let state = State::new(
             &WorkerConfig {
                 in_rate: input.rate,
@@ -406,7 +406,7 @@ mod tests {
             },
             ..Selection::default()
         };
-        let processor = Box::new(Passthrough::new(48_000));
+        let processor = Box::new(Passthrough);
         match AudioSession::start(&sel, Arc::new(Shared::new()), processor) {
             Err((StartError::DeviceNotFound(name), Some(_))) => {
                 assert_eq!(name, "No Such Device 7f3a")

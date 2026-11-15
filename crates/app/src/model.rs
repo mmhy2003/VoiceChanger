@@ -13,6 +13,8 @@ use crate::tabs::voice::khz;
 /// What the Voice tab shows about a loaded model.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelInfo {
+    /// The model's ID in the library.
+    pub id: String,
     pub name: String,
     pub sample_rate: u32,
     pub requested: Provider,
@@ -112,6 +114,11 @@ impl<P> ModelSlot<P> {
         matches!(self, Self::Loading { .. })
     }
 
+    /// A running session holds the model.
+    pub fn is_in_session(&self) -> bool {
+        matches!(self, Self::InSession(_))
+    }
+
     /// One line for the Voice tab, e.g. "voice · 40 kHz · DirectML (GPU 0)".
     pub fn label(&self) -> String {
         match self {
@@ -139,6 +146,7 @@ pub fn provider_label(requested: Provider, active: Provider) -> String {
 
 /// Loads and warms up the model `name` at `path` on a "vc-model-loader" thread.
 pub fn spawn_load(
+    id: String,
     name: String,
     path: PathBuf,
     sr_override: Option<u32>,
@@ -160,6 +168,7 @@ pub fn spawn_load(
             let result = Pipeline::new(&cfg)
                 .map(|p| {
                     let info = ModelInfo {
+                        id,
                         name,
                         sample_rate: p.sample_rate(),
                         requested: provider,
@@ -176,6 +185,7 @@ pub fn spawn_load(
 /// Loads and warms up only the generator of the model `name` at `path` on a "vc-gen-loader"
 /// thread, to swap into a loaded pipeline.
 pub fn spawn_generator_load(
+    id: String,
     name: String,
     path: PathBuf,
     sample_rate: u32,
@@ -193,6 +203,7 @@ pub fn spawn_generator_load(
                 })
                 .map(|g| {
                     let info = ModelInfo {
+                        id,
                         name,
                         sample_rate: g.sample_rate(),
                         requested: provider,
@@ -214,6 +225,7 @@ mod tests {
 
     fn info() -> ModelInfo {
         ModelInfo {
+            id: "voice-id".into(),
             name: "voice".into(),
             sample_rate: 40000,
             requested: Provider::DirectMl { device: 0 },
@@ -277,6 +289,20 @@ mod tests {
         slot.give_back(7);
         assert!(matches!(slot, ModelSlot::Ready(7, _)));
         assert!(slot.is_ready());
+    }
+
+    #[test]
+    fn is_in_session_only_while_a_session_holds_the_model() {
+        let mut slot = ModelSlot::Ready(7u32, info());
+        assert!(!slot.is_in_session());
+        slot.take();
+        assert!(slot.is_in_session());
+        assert_eq!(slot.info().map(|i| i.id.as_str()), Some("voice-id"));
+        slot.give_back(7);
+        assert!(!slot.is_in_session());
+        assert!(!ModelSlot::<u32>::Empty.is_in_session());
+        assert!(!loading().0.is_in_session());
+        assert!(!ModelSlot::<u32>::Failed("bad".into()).is_in_session());
     }
 
     #[test]

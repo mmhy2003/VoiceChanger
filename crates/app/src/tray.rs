@@ -1,10 +1,10 @@
-//! The system tray icon: its menu, its two icons, and the rules for what a click and a close do.
+//! The system tray icon: its menu with the ticked Bypass item, its two icons, and the rules for what a click and a close do.
 
 use std::sync::mpsc::{self, Receiver};
 
 use image::imageops::{self, FilterType};
 use image::{ImageFormat, Rgba, RgbaImage};
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::window::Waker;
@@ -15,12 +15,14 @@ pub enum TrayCommand {
     Open,
     Start,
     Stop,
+    Bypass,
     Exit,
 }
 
 const OPEN_ID: &str = "open";
 const START_ID: &str = "start";
 const STOP_ID: &str = "stop";
+const BYPASS_ID: &str = "bypass";
 const EXIT_ID: &str = "exit";
 
 /// The command of the menu item with `id`.
@@ -29,6 +31,7 @@ pub fn command_for_menu(id: &str) -> Option<TrayCommand> {
         OPEN_ID => Some(TrayCommand::Open),
         START_ID => Some(TrayCommand::Start),
         STOP_ID => Some(TrayCommand::Stop),
+        BYPASS_ID => Some(TrayCommand::Bypass),
         EXIT_ID => Some(TrayCommand::Exit),
         _ => None,
     }
@@ -64,23 +67,43 @@ pub struct TrayState {
     /// The green dot, and Stop is enabled.
     pub running: bool,
     pub start_enabled: bool,
+    /// The Bypass item is ticked.
+    pub bypass: bool,
+    /// A model is chosen, so Bypass can be flipped.
+    pub bypass_enabled: bool,
     pub tooltip: String,
 }
 
 /// The tray for the app's state. `start_blocked` is whether the Start button has a hint;
-/// `model` is the loaded model's name.
-pub fn tray_state(running: bool, start_blocked: bool, model: Option<&str>) -> TrayState {
+/// `sent` is what a running session sends: the model's name or "Original voice".
+pub fn tray_state(
+    running: bool,
+    start_blocked: bool,
+    sent: Option<&str>,
+    bypass: bool,
+    model_chosen: bool,
+) -> TrayState {
     TrayState {
         running,
         start_enabled: !running && !start_blocked,
-        tooltip: tooltip(running, model),
+        bypass,
+        bypass_enabled: model_chosen,
+        tooltip: tooltip(running, sent),
     }
+}
+
+/// The Bypass tick the menu shows after `commands`: Windows flips it itself on every click.
+pub fn tick_after(shown: bool, commands: &[TrayCommand]) -> bool {
+    commands
+        .iter()
+        .filter(|c| **c == TrayCommand::Bypass)
+        .fold(shown, |tick, _| !tick)
 }
 
 /// Windows keeps at most 127 UTF-16 units of a tray tooltip.
 const TOOLTIP_MAX: usize = 127;
 
-/// "VoiceChanger: Running (<model>)" or "VoiceChanger: Stopped", cut to what Windows shows.
+/// "VoiceChanger: Running (<what is sent>)" or "VoiceChanger: Stopped", cut to what Windows shows.
 pub fn tooltip(running: bool, model: Option<&str>) -> String {
     let mut text = match (running, model) {
         (false, _) => "VoiceChanger: Stopped".to_string(),
@@ -130,6 +153,7 @@ pub struct Tray {
     icon: TrayIcon,
     start: MenuItem,
     stop: MenuItem,
+    bypass: CheckMenuItem,
     stopped_icon: Icon,
     running_icon: Icon,
     rx: Receiver<TrayCommand>,
@@ -145,15 +169,23 @@ fn to_icon(image: RgbaImage) -> Result<Icon, String> {
 impl Tray {
     /// Adds the icon to the system tray. A click queues a command and wakes the app.
     pub fn new(waker: Waker) -> Result<Self, String> {
-        let shown = tray_state(false, true, None);
+        let shown = tray_state(false, true, None, false, false);
         let item = |id: &str, text: &str, enabled: bool| {
             MenuItem::with_id(MenuId::new(id), text, enabled, None)
         };
         let open = item(OPEN_ID, "Open VoiceChanger", true);
         let start = item(START_ID, "Start", shown.start_enabled);
         let stop = item(STOP_ID, "Stop", shown.running);
+        let bypass = CheckMenuItem::with_id(
+            MenuId::new(BYPASS_ID),
+            "Bypass",
+            shown.bypass_enabled,
+            shown.bypass,
+            None,
+        );
         let exit = item(EXIT_ID, "Exit", true);
-        let menu = Menu::with_items(&[&open, &start, &stop, &exit]).map_err(|e| e.to_string())?;
+        let items: [&dyn IsMenuItem; 5] = [&open, &start, &stop, &bypass, &exit];
+        let menu = Menu::with_items(&items).map_err(|e| e.to_string())?;
         let stopped_icon = to_icon(icon_rgba(false))?;
         let running_icon = to_icon(icon_rgba(true))?;
 
@@ -189,6 +221,7 @@ impl Tray {
             icon,
             start,
             stop,
+            bypass,
             stopped_icon,
             running_icon,
             rx,
@@ -197,11 +230,14 @@ impl Tray {
     }
 
     /// The commands clicked since the last call.
-    pub fn poll(&self) -> Vec<TrayCommand> {
-        self.rx.try_iter().collect()
+    pub fn poll(&mut self) -> Vec<TrayCommand> {
+        let commands: Vec<TrayCommand> = self.rx.try_iter().collect();
+        // Keeps `shown` true to the menu, so `sync` puts the tick back if the app refused the flip.
+        self.shown.bypass = tick_after(self.shown.bypass, &commands);
+        commands
     }
 
-    /// Shows `state`: the greyed items, the icon and the tooltip. Does nothing when it is
+    /// Shows `state`: the greyed items, the Bypass tick, the icon and the tooltip. Does nothing when it is
     /// what the tray already shows.
     pub fn sync(&mut self, state: TrayState) {
         if state == self.shown {
@@ -209,6 +245,8 @@ impl Tray {
         }
         self.start.set_enabled(state.start_enabled);
         self.stop.set_enabled(state.running);
+        self.bypass.set_enabled(state.bypass_enabled);
+        self.bypass.set_checked(state.bypass);
         if state.running != self.shown.running {
             let icon = if state.running {
                 &self.running_icon
@@ -254,17 +292,41 @@ mod tests {
 
     #[test]
     fn tray_state_stopped_running_blocked() {
-        let stopped = tray_state(false, false, Some("Ana"));
+        let stopped = tray_state(false, false, Some("Ana"), false, false);
         assert!(!stopped.running && stopped.start_enabled);
         assert_eq!(stopped.tooltip, "VoiceChanger: Stopped");
-        let running = tray_state(true, false, Some("Ana"));
+        let running = tray_state(true, false, Some("Ana"), false, false);
         assert!(running.running && !running.start_enabled);
         assert_eq!(running.tooltip, "VoiceChanger: Running (Ana)");
-        let blocked = tray_state(false, true, None);
+        let blocked = tray_state(false, true, None, false, false);
         assert!(!blocked.running && !blocked.start_enabled);
         assert_eq!(blocked.tooltip, "VoiceChanger: Stopped");
         // A running session's Start stays greyed whatever the hint says.
-        assert!(!tray_state(true, true, Some("Ana")).start_enabled);
+        assert!(!tray_state(true, true, Some("Ana"), false, false).start_enabled);
+    }
+
+    #[test]
+    fn tray_state_bypass() {
+        let bypassed = tray_state(true, false, Some("Original voice"), true, true);
+        assert!(bypassed.bypass && bypassed.bypass_enabled);
+        assert_eq!(bypassed.tooltip, "VoiceChanger: Running (Original voice)");
+        let converting = tray_state(true, false, Some("Ana"), false, true);
+        assert!(!converting.bypass && converting.bypass_enabled);
+        assert_eq!(converting.tooltip, "VoiceChanger: Running (Ana)");
+        // No model chosen: Bypass is greyed and unticked.
+        let original = tray_state(true, false, Some("Original voice"), false, false);
+        assert!(!original.bypass && !original.bypass_enabled);
+        assert_eq!(original.tooltip, "VoiceChanger: Running (Original voice)");
+    }
+
+    #[test]
+    fn tick_after_flips_once_per_click() {
+        use TrayCommand::{Bypass, Open, Start};
+        assert!(!tick_after(false, &[]));
+        assert!(tick_after(false, &[Bypass]));
+        assert!(!tick_after(true, &[Bypass]));
+        assert!(!tick_after(false, &[Bypass, Open, Bypass]));
+        assert!(tick_after(true, &[Open, Start]));
     }
 
     #[test]
@@ -273,6 +335,10 @@ mod tests {
         assert_eq!(tooltip(false, Some("Ana")), "VoiceChanger: Stopped");
         assert_eq!(tooltip(true, Some("Ana")), "VoiceChanger: Running (Ana)");
         assert_eq!(tooltip(true, None), "VoiceChanger: Running");
+        assert_eq!(
+            tooltip(true, Some("Original voice")),
+            "VoiceChanger: Running (Original voice)"
+        );
         let long = tooltip(true, Some(&"é".repeat(300)));
         assert_eq!(long.encode_utf16().count(), 127);
         assert!(long.starts_with("VoiceChanger: Running (é") && long.ends_with('…'));
@@ -284,6 +350,8 @@ mod tests {
         assert_eq!(command_for_menu(START_ID), Some(TrayCommand::Start));
         assert_eq!(command_for_menu(STOP_ID), Some(TrayCommand::Stop));
         assert_eq!(command_for_menu(EXIT_ID), Some(TrayCommand::Exit));
+        assert_eq!(BYPASS_ID, "bypass");
+        assert_eq!(command_for_menu(BYPASS_ID), Some(TrayCommand::Bypass));
         assert_eq!(command_for_menu("1001"), None);
     }
 

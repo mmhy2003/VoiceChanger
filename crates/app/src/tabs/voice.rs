@@ -3,8 +3,10 @@
 
 use eframe::egui;
 use vc_audio::SessionInfo;
+use vc_engine::stream::settings::GATE_DB_RANGE;
+use vc_models::PITCH_RANGE;
 
-use crate::app::{AUDIO_DEAD, Tab, VcApp};
+use crate::app::{AUDIO_DEAD, GAIN_DB_RANGE, Tab, VcApp};
 use crate::source::{ORIGINAL_VOICE, VoiceSource};
 use crate::widgets;
 
@@ -52,7 +54,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
 
     let pitch = ui.add_enabled(
         model_chosen,
-        egui::Slider::new(&mut app.state.voice.pitch, -24..=24)
+        egui::Slider::new(&mut app.state.voice.pitch, PITCH_RANGE)
             .text("Pitch")
             .suffix(" st"),
     );
@@ -61,18 +63,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
     }
     let voice = &mut app.state.voice;
     ui.add(
-        egui::Slider::new(&mut voice.input_db, -20.0..=20.0)
+        egui::Slider::new(&mut voice.input_db, GAIN_DB_RANGE)
             .text("Input gain")
             .suffix(" dB"),
     );
     ui.add(
-        egui::Slider::new(&mut voice.output_db, -20.0..=20.0)
+        egui::Slider::new(&mut voice.output_db, GAIN_DB_RANGE)
             .text("Output gain")
             .suffix(" dB"),
     );
     ui.add_enabled(
         model_chosen,
-        egui::Slider::new(&mut voice.gate_db, -90.0..=-20.0)
+        egui::Slider::new(&mut voice.gate_db, GATE_DB_RANGE)
             .text("Noise gate")
             .suffix(" dB"),
     );

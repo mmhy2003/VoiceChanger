@@ -1,6 +1,7 @@
 //! Top-level app state and the tab bar.
 
 use std::any::Any;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -153,6 +154,13 @@ impl PerfSettings {
         }
     }
 }
+
+/// Input gain and Output gain, in dB.
+pub const GAIN_DB_RANGE: RangeInclusive<f32> = -20.0..=20.0;
+/// Monitor volume, in dB.
+pub const MONITOR_DB_RANGE: RangeInclusive<f32> = -40.0..=0.0;
+/// GPU index for DirectML and CUDA.
+pub const GPU_RANGE: RangeInclusive<i32> = 0..=7;
 
 /// Voice tab controls, applied live to the running stream.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1170,6 +1178,13 @@ mod tests {
     use super::*;
     use crate::config::UpdatesConfig;
     use vc_audio::{DEFAULT_MONITOR_DB, DeviceInfo};
+
+    #[test]
+    fn slider_ranges() {
+        assert_eq!(GAIN_DB_RANGE, -20.0..=20.0);
+        assert_eq!(MONITOR_DB_RANGE, -40.0..=0.0);
+        assert_eq!(GPU_RANGE, 0..=7);
+    }
 
     #[test]
     fn window_title_has_version() {

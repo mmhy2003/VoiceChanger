@@ -2,8 +2,9 @@
 
 use eframe::egui;
 use vc_audio::{feedback_warnings, is_virtual_cable, start_blocker};
+use vc_engine::stream::settings::{BLOCK_MS, CONTEXT_MS, CROSSFADE_MS};
 
-use crate::app::{ProviderChoice, VcApp};
+use crate::app::{GPU_RANGE, MONITOR_DB_RANGE, ProviderChoice, VcApp};
 use crate::files;
 use crate::hotkey::{RecordOutcome, record_key};
 use crate::paths::AppDirs;
@@ -77,7 +78,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
                             }
                         });
                     ui.add(
-                        egui::Slider::new(&mut state.monitor_db, -40.0..=0.0)
+                        egui::Slider::new(&mut state.monitor_db, MONITOR_DB_RANGE)
                             .suffix(" dB")
                             .text("Volume"),
                     );
@@ -149,7 +150,7 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
                         });
                     if perf.provider != ProviderChoice::Cpu {
                         ui.label("GPU");
-                        ui.add(egui::DragValue::new(&mut perf.gpu).range(0..=7));
+                        ui.add(egui::DragValue::new(&mut perf.gpu).range(GPU_RANGE));
                     }
                 });
             });
@@ -157,9 +158,9 @@ fn performance(ui: &mut egui::Ui, app: &mut VcApp) {
 
             let stream = &mut perf.stream;
             for (label, value, range) in [
-                ("Block", &mut stream.block_ms, 50..=1000),
-                ("Extra context", &mut stream.context_ms, 0..=2000),
-                ("Crossfade", &mut stream.crossfade_ms, 10..=200),
+                ("Block", &mut stream.block_ms, BLOCK_MS),
+                ("Extra context", &mut stream.context_ms, CONTEXT_MS),
+                ("Crossfade", &mut stream.crossfade_ms, CROSSFADE_MS),
             ] {
                 ui.label(label);
                 let resp = ui.add(egui::Slider::new(value, range).step_by(10.0).suffix(" ms"));

@@ -311,6 +311,34 @@ mod tests {
         }
     }
 
+    /// Every `Id` is used outside `help/`, as a whole word, so each entry has a tip.
+    #[test]
+    fn every_entry_has_a_tip_in_the_ui() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        crate::glyphs::rust_files(&src, &mut files);
+        let help_dir = src.join("help");
+        let text: String = files
+            .iter()
+            .filter(|f| !f.starts_with(&help_dir))
+            .map(|f| std::fs::read_to_string(f).expect("read source"))
+            .collect();
+        let missing: Vec<String> = Id::ALL
+            .iter()
+            .map(|id| format!("Id::{id:?}"))
+            .filter(|needle| {
+                !text.match_indices(needle.as_str()).any(|(i, _)| {
+                    !text[i + needle.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                })
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "no tip in the UI for: {}",
+            missing.join(", ")
+        );
+    }
+
     #[test]
     fn range_texts() {
         let expected = [

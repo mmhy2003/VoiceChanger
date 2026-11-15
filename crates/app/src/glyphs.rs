@@ -20,7 +20,7 @@ fn non_ascii(text: &str) -> Vec<(usize, char)> {
 }
 
 /// Every `.rs` file under `dir`, recursively, appended to `out`.
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("read source dir") {
         let path = entry.expect("read dir entry").path();
         if path.is_dir() {

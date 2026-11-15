@@ -17,7 +17,7 @@ pub struct StreamResampler {
 impl StreamResampler {
     pub fn new(from: u32, to: u32) -> Result<Self> {
         let inner = FftFixedIn::<f32>::new(from as usize, to as usize, CHUNK, 2, 1)
-            .map_err(|e| EngineError::Inference(format!("resampler {from}→{to} Hz: {e}")))?;
+            .map_err(|e| EngineError::Inference(format!("resampler {from}->{to} Hz: {e}")))?;
         let chunk_out = inner.output_buffer_allocate(true);
         Ok(Self {
             inner,

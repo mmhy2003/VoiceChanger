@@ -107,13 +107,13 @@ fn rows(ui: &mut egui::Ui, app: &mut VcApp) -> Option<Action> {
         let is_active = app.prefs.last_model.as_deref() == Some(id.as_str());
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(exists && i > 0, egui::Button::new("▲"))
+                .add_enabled(exists && i > 0, egui::Button::new("⏶"))
                 .clicked()
             {
                 action = Some(Action::MoveUp(id.clone()));
             }
             if ui
-                .add_enabled(exists && i + 1 < entries.len(), egui::Button::new("▼"))
+                .add_enabled(exists && i + 1 < entries.len(), egui::Button::new("⏷"))
                 .clicked()
             {
                 action = Some(Action::MoveDown(id.clone()));

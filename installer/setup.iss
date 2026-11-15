@@ -94,6 +94,7 @@ var
   CableChecked: Boolean;
   CableFound: Boolean;
   CableOutcome: String;   { '', 'installed', 'restart', 'failed', 'declined', 'skipped' }
+  CablePage: TInputOptionWizardPage;
 
 { /CableUrl= and /CableSha256= are for installer\test-install.ps1 only: accepted only for a local URL. }
 function PackOverridden: Boolean;
@@ -122,6 +123,14 @@ begin
   Log('VoiceChanger: VB-CABLE pack ' + PackUrl);
   if (ExpandConstant('{param:CableUrl|}') <> '') and not PackOverridden then
     Log('VoiceChanger: ignoring /CableUrl=' + ExpandConstant('{param:CableUrl|}'));
+  CablePage := CreateInputOptionPage(wpSelectTasks, 'Virtual audio cable',
+    'No virtual audio cable was found on this PC.',
+    '{#AppName} sends your voice to a virtual audio cable, which Discord, Zoom, games and other apps then use as a microphone.' + #13#10#13#10 +
+    'Setup can download VB-CABLE from vb-audio.com and install it. VB-CABLE is made by VB-Audio (www.vb-cable.com) and is donationware: if you find it useful, you can support it with a donation or a licence. Windows will ask you to approve its driver.',
+    True, False);
+  CablePage.Add('Download and install VB-CABLE (recommended)');
+  CablePage.Add('Skip, I will install a virtual cable myself');
+  CablePage.Values[0] := True;
 end;
 
 { Same rule as is_virtual_cable in crates/audio/src/devices.rs. }
@@ -201,7 +210,33 @@ begin
   if not NoVirtualCable then
     Exit;
   if ParamGiven('/INSTALLCABLE') then
-    Result := True;
+    Result := True
+  else if not WizardSilent then
+    Result := (CablePage <> nil) and CablePage.Values[0];
+end;
+
+{ The offer page only shows when no virtual cable was found. }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (CablePage <> nil) and (PageID = CablePage.ID) and not NoVirtualCable;
+end;
+
+{ The default Ready memo, plus the VB-CABLE install when the user asked for it. }
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+var
+  S: String;
+begin
+  S := '';
+  if MemoUserInfoInfo <> '' then S := S + MemoUserInfoInfo + NewLine + NewLine;
+  if MemoDirInfo <> '' then S := S + MemoDirInfo + NewLine + NewLine;
+  if MemoTypeInfo <> '' then S := S + MemoTypeInfo + NewLine + NewLine;
+  if MemoComponentsInfo <> '' then S := S + MemoComponentsInfo + NewLine + NewLine;
+  if MemoGroupInfo <> '' then S := S + MemoGroupInfo + NewLine + NewLine;
+  if MemoTasksInfo <> '' then S := S + MemoTasksInfo + NewLine + NewLine;
+  if CableRequested then
+    S := S + 'Virtual audio cable:' + NewLine + Space + 'Download and install VB-CABLE from vb-audio.com' + NewLine + NewLine;
+  Result := S;
 end;
 
 procedure CableFailed(Reason: String);

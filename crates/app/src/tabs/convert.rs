@@ -11,6 +11,7 @@ use vc_models::PITCH_RANGE;
 use crate::app::{Tab, VcApp};
 use crate::convert::{Form, State, file_name, overall, stage_label};
 use crate::files;
+use crate::help::{self, Id, Topic};
 use crate::tabs::voice::khz;
 
 /// The Convert tab's open pickers.
@@ -46,7 +47,7 @@ enum Action {
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
-    ui.heading("Convert");
+    help::ui::heading(ui, &mut app.help, "Convert", Topic::Convert);
     poll_picks(app);
 
     let picking = app.convert_ui.pick_rx.is_some();
@@ -65,9 +66,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
         State::Ready { inspection, form } => {
             summary(ui, inspection);
             form_ui(ui, form, picking_icon, &mut action);
-            if ui
-                .add_enabled(!form.name.trim().is_empty(), egui::Button::new("Convert"))
-                .clicked()
+            if help::ui::tip(
+                ui.add_enabled(!form.name.trim().is_empty(), egui::Button::new("Convert")),
+                Id::ConvertButton,
+            )
+            .clicked()
             {
                 action = Some(Action::Convert);
             }
@@ -97,22 +100,26 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
                 ui.label(note.as_str());
             }
             ui.horizontal(|ui| {
-                if ui.button("Use now").clicked() {
+                if help::ui::tip(ui.button("Use now"), Id::AfterConvert).clicked() {
                     action = Some(Action::UseNow(id.clone()));
                 }
-                if ui.button("Show in Models").clicked() {
+                if help::ui::tip(ui.button("Show in Models"), Id::AfterConvert).clicked() {
                     action = Some(Action::ShowModels);
                 }
                 let exporting = export_rx.is_some() || picking_export;
-                if ui
-                    .add_enabled(!exporting, egui::Button::new("Export .onnx…"))
-                    .clicked()
+                if help::ui::tip(
+                    ui.add_enabled(!exporting, egui::Button::new("Export .onnx…")),
+                    Id::AfterConvert,
+                )
+                .clicked()
                 {
                     action = Some(Action::Export(id.clone()));
                 }
-                if ui
-                    .add_enabled(!picking, egui::Button::new("Convert another…"))
-                    .clicked()
+                if help::ui::tip(
+                    ui.add_enabled(!picking, egui::Button::new("Convert another…")),
+                    Id::AfterConvert,
+                )
+                .clicked()
                 {
                     action = Some(Action::Another);
                 }
@@ -128,9 +135,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
                 if ui.button("Open logs folder").clicked() {
                     action = Some(Action::OpenLogs);
                 }
-                if ui
-                    .add_enabled(!picking, egui::Button::new("Choose another file…"))
-                    .clicked()
+                if help::ui::tip(
+                    ui.add_enabled(!picking, egui::Button::new("Choose another file…")),
+                    Id::ChooseFile,
+                )
+                .clicked()
                 {
                     action = Some(Action::Choose);
                 }
@@ -145,9 +154,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut VcApp) {
 /// Choose file… and the drop hint.
 fn choose(ui: &mut egui::Ui, picking: bool, action: &mut Option<Action>) {
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(!picking, egui::Button::new("Choose file…"))
-            .clicked()
+        if help::ui::tip(
+            ui.add_enabled(!picking, egui::Button::new("Choose file…")),
+            Id::ChooseFile,
+        )
+        .clicked()
         {
             *action = Some(Action::Choose);
         }
@@ -174,19 +185,27 @@ fn form_ui(ui: &mut egui::Ui, form: &mut Form, picking_icon: bool, action: &mut 
     egui::Grid::new("convert-form")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label("Name");
-            ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(200.0));
+            help::ui::tip(ui.label("Name"), Id::ConvertForm);
+            help::ui::tip(
+                ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(200.0)),
+                Id::ConvertForm,
+            );
             ui.end_row();
 
-            ui.label("Default pitch");
-            ui.add(egui::DragValue::new(&mut form.pitch).range(PITCH_RANGE));
+            help::ui::tip(ui.label("Default pitch"), Id::ConvertForm);
+            help::ui::tip(
+                ui.add(egui::DragValue::new(&mut form.pitch).range(PITCH_RANGE)),
+                Id::ConvertForm,
+            );
             ui.end_row();
 
-            ui.label("Icon");
+            help::ui::tip(ui.label("Icon"), Id::ConvertForm);
             ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!picking_icon, egui::Button::new("Choose…"))
-                    .clicked()
+                if help::ui::tip(
+                    ui.add_enabled(!picking_icon, egui::Button::new("Choose…")),
+                    Id::ConvertForm,
+                )
+                .clicked()
                 {
                     *action = Some(Action::PickIcon);
                 }

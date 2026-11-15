@@ -11,6 +11,10 @@
 #define AppName "VoiceChanger"
 #define AppExe "voicechanger.exe"
 #define Root AddBackslash(SourcePath) + ".."
+; VB-CABLE pack from vb-audio.com/Cable. Bump both together in a PR; test-install.ps1 checks them.
+#define CableUrl "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack46.zip"
+#define CableSha256 "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90"
+#define CableSetupExe "VBCABLE_Setup_x64.exe"
 
 [Setup]
 AppId={{7C3B9E52-4A1D-4F6E-9B8A-2D5E1C0F7A34}
@@ -50,6 +54,10 @@ OutputBaseFilename=Setup-{#AppName}-{#AppVersion}
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Messages]
+; Only our VB-CABLE install asks for a restart (NeedRestart), so this label never shows for anything else.
+FinishedRestartLabel=VB-CABLE was installed, but Windows does not show it yet. Restart your computer to finish installing it.%n%nIf "CABLE Input" is still missing after the restart, install VB-CABLE from https://vb-audio.com/Cable/. Would you like to restart now?
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
@@ -79,10 +87,51 @@ const
   DeviceDescValue = '{a45c254e-df1c-4efd-8020-67d146a850e0},2';
   InterfaceNameValue = '{b3f8fa53-0004-438e-9003-51a46e139bfc},6';
   DeviceStateActive = 1;
+  LocalUrlPrefix = 'http://127.0.0.1:';
+  ErrorCancelled = 1223;
 
 var
   CableChecked: Boolean;
   CableFound: Boolean;
+  CableOutcome: String;   { '', 'installed', 'restart', 'failed', 'declined', 'skipped' }
+  CablePage: TInputOptionWizardPage;
+
+{ /CableUrl= and /CableSha256= are for installer\test-install.ps1 only: accepted only for a local URL. }
+function PackOverridden: Boolean;
+begin
+  Result := Pos(LocalUrlPrefix, ExpandConstant('{param:CableUrl|}')) = 1;
+end;
+
+function PackUrl: String;
+begin
+  if PackOverridden then
+    Result := ExpandConstant('{param:CableUrl|}')
+  else
+    Result := '{#CableUrl}';
+end;
+
+function PackSha256: String;
+begin
+  Result := '{#CableSha256}';
+  if PackOverridden and (ExpandConstant('{param:CableSha256|}') <> '') then
+    Result := ExpandConstant('{param:CableSha256|}');
+end;
+
+{ Also runs in silent installs: logs the pack for installer\test-install.ps1. }
+procedure InitializeWizard;
+begin
+  Log('VoiceChanger: VB-CABLE pack ' + PackUrl);
+  if (ExpandConstant('{param:CableUrl|}') <> '') and not PackOverridden then
+    Log('VoiceChanger: ignoring /CableUrl=' + ExpandConstant('{param:CableUrl|}'));
+  CablePage := CreateInputOptionPage(wpSelectTasks, 'Virtual audio cable',
+    'No virtual audio cable was found on this PC.',
+    '{#AppName} sends your voice to a virtual audio cable, which Discord, Zoom, games and other apps then use as a microphone.' + #13#10#13#10 +
+    'Setup can download VB-CABLE from vb-audio.com and install it. VB-CABLE is made by VB-Audio (www.vb-cable.com) and is donationware: if you find it useful, you can support it with a donation or a licence. Windows will ask you to approve its driver.',
+    True, False);
+  CablePage.Add('Download and install VB-CABLE (recommended)');
+  CablePage.Add('Skip, I will install a virtual cable myself');
+  CablePage.Values[0] := True;
+end;
 
 { Same rule as is_virtual_cable in crates/audio/src/devices.rs. }
 function IsVirtualCableName(Name: String): Boolean;
@@ -143,17 +192,6 @@ begin
   Result := not CableFound;
 end;
 
-{ The [Run] entry is skipped in silent mode, so log the result for installer\test-install.ps1. }
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep <> ssPostInstall then
-    Exit;
-  if NoVirtualCable then
-    Log('VoiceChanger: virtual cable not found')
-  else
-    Log('VoiceChanger: virtual cable found');
-end;
-
 { True when Name (e.g. '/RELAUNCH') is on the command line, in any case. }
 function ParamGiven(Name: String): Boolean;
 var
@@ -163,6 +201,162 @@ begin
   for I := 1 to ParamCount do
     if CompareText(ParamStr(I), Name) = 0 then
       Result := True;
+end;
+
+{ True when setup should download and install VB-CABLE: never in a silent install unless /INSTALLCABLE. }
+function CableRequested: Boolean;
+begin
+  Result := False;
+  if not NoVirtualCable then
+    Exit;
+  if ParamGiven('/INSTALLCABLE') then
+    Result := True
+  else if not WizardSilent then
+    Result := (CablePage <> nil) and CablePage.Values[0];
+end;
+
+{ The offer page only shows when no virtual cable was found. }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (CablePage <> nil) and (PageID = CablePage.ID) and not NoVirtualCable;
+end;
+
+{ The default Ready memo, plus the VB-CABLE install when the user asked for it. }
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+var
+  S: String;
+begin
+  S := '';
+  if MemoUserInfoInfo <> '' then S := S + MemoUserInfoInfo + NewLine + NewLine;
+  if MemoDirInfo <> '' then S := S + MemoDirInfo + NewLine + NewLine;
+  if MemoTypeInfo <> '' then S := S + MemoTypeInfo + NewLine + NewLine;
+  if MemoComponentsInfo <> '' then S := S + MemoComponentsInfo + NewLine + NewLine;
+  if MemoGroupInfo <> '' then S := S + MemoGroupInfo + NewLine + NewLine;
+  if MemoTasksInfo <> '' then S := S + MemoTasksInfo + NewLine + NewLine;
+  if CableRequested then
+    S := S + 'Virtual audio cable:' + NewLine + Space + 'Download and install VB-CABLE from vb-audio.com' + NewLine + NewLine;
+  Result := S;
+end;
+
+procedure CableFailed(Reason: String);
+begin
+  CableOutcome := 'failed';
+  Log('VoiceChanger: VB-CABLE not installed: ' + Reason);
+  SuppressibleMsgBox('VB-CABLE could not be installed: ' + Reason + #13#10#13#10 +
+    'Setup will continue installing {#AppName}. You can install VB-CABLE later from https://vb-audio.com/Cable/.',
+    mbError, MB_OK, IDOK);
+end;
+
+{ Downloads the pinned pack into setup's temporary folder, checks its SHA-256 (Inno raises on a mismatch or HTTP error),
+  unzips it with Windows' tar.exe and runs VB-Audio's installer silently and elevated. }
+procedure InstallCable;
+var
+  DownloadPage: TDownloadWizardPage;
+  Zip, Dir, Exe: String;
+  Code, I: Integer;
+begin
+  DownloadPage := nil;
+  Zip := ExpandConstant('{tmp}\vbcable.zip');
+  Dir := ExpandConstant('{tmp}\vbcable');
+  Log('VoiceChanger: downloading VB-CABLE from ' + PackUrl);
+  try
+    try
+      if WizardSilent then
+        DownloadTemporaryFile(PackUrl, 'vbcable.zip', PackSha256, nil)
+      else
+      begin
+        DownloadPage := CreateDownloadPage('Virtual audio cable',
+          'Downloading VB-CABLE from vb-audio.com...', nil);
+        DownloadPage.Clear;
+        DownloadPage.Add(PackUrl, 'vbcable.zip', PackSha256);
+        DownloadPage.Show;
+        DownloadPage.Download;
+      end;
+    except
+      if (DownloadPage <> nil) and DownloadPage.AbortedByUser then
+      begin
+        CableOutcome := 'skipped';
+        Log('VoiceChanger: VB-CABLE skipped');
+      end else
+        CableFailed('the download failed (' + GetExceptionMessage + ')');
+      Exit;
+    end;
+    ForceDirectories(Dir);
+    if not Exec(ExpandConstant('{sys}\tar.exe'), '-xf "' + Zip + '" -C "' + Dir + '"', '',
+      SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+    begin
+      CableFailed('the pack could not be unzipped (tar.exe exit code ' + IntToStr(Code) + ')');
+      Exit;
+    end;
+    Exe := Dir + '\{#CableSetupExe}';
+    if not FileExists(Exe) then
+    begin
+      CableFailed('{#CableSetupExe} is missing from the pack');
+      Exit;
+    end;
+    if DownloadPage <> nil then
+    begin
+      DownloadPage.SetText('Installing the VB-CABLE audio driver...',
+        'Windows will ask you to approve VB-Audio''s installer and its driver.');
+      DownloadPage.ProgressBar.Style := npbstMarquee;
+    end;
+    if not ShellExec('runas', Exe, '-i -h', ExtractFileDir(Exe), SW_SHOWNORMAL, ewWaitUntilTerminated, Code) then
+    begin
+      if Code = ErrorCancelled then
+      begin
+        CableOutcome := 'declined';
+        Log('VoiceChanger: VB-CABLE declined');
+      end else
+        CableFailed('VB-Audio''s installer did not start (' + SysErrorMessage(Code) + ')');
+      Exit;
+    end;
+    { The new endpoint can take a few seconds to show up. }
+    for I := 1 to 15 do
+    begin
+      if VirtualCableInstalled then
+        Break;
+      Sleep(1000);
+    end;
+    if VirtualCableInstalled then
+    begin
+      CableOutcome := 'installed';
+      CableFound := True;
+      CableChecked := True;
+      Log('VoiceChanger: VB-CABLE installed');
+    end else
+    begin
+      CableOutcome := 'restart';
+      Log('VoiceChanger: VB-CABLE restart needed');
+    end;
+  finally
+    if DownloadPage <> nil then
+      DownloadPage.Hide;
+  end;
+end;
+
+{ Inno also simulates the Next clicks in silent mode, so /VERYSILENT /INSTALLCABLE gets here too. }
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  if (CurPageID = wpReady) and CableRequested then
+    InstallCable;
+  Result := True;
+end;
+
+function NeedRestart: Boolean;
+begin
+  Result := CableOutcome = 'restart';
+end;
+
+{ The [Run] entry is skipped in silent mode, so log the result for installer\test-install.ps1. }
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+  if NoVirtualCable then
+    Log('VoiceChanger: virtual cable not found')
+  else
+    Log('VoiceChanger: virtual cable found');
 end;
 
 { /RELAUNCH: the in-app updater asks setup to start VoiceChanger again, also in silent mode. }
